@@ -404,13 +404,13 @@ In `src/internal/_shared.ps1`:
 
 ## License
 
-Source-Available / Custom Non-Commercial License
+**Source-Available / Custom Non-Commercial License**
 
-This project is open for viewing, personal use, educational purposes, and non-commercial development. However, commercial entities, corporations, or individuals seeking to integrate or monetize this software cannot own, close, or commercially exploit this project without explicit written permission.
+This project is open for viewing, personal use, educational purposes, and non-commercial development. However, commercial entities, corporations, or individuals seeking to integrate or monetize this software **cannot own, close, or commercially exploit this project** without explicit written permission.
 
-Personal & Educational Use: Free to use, modify, and distribute indefinitely.
+- **Personal & Educational Use:** Free to use, modify, and distribute indefinitely.
 
-Commercial / Enterprise Use: You must request permission and agree to specific terms & conditions before usage.
+- **Commercial / Enterprise Use:** You must request permission and agree to specific terms & conditions before usage.
 
 For full legal terms, please review the `LICENSE` file in this repository.
 
