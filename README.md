@@ -414,10 +414,14 @@ This project is open for viewing, personal use, educational purposes, and non-co
 
 For full legal terms, please review the `LICENSE` file in this repository.
 
+**For commercial licensing or corporate use inquiries, please contact me at tanvirfoysaltoshin@gmail.com.**
+
 ---
 
 ## Author
 
 **Tanvir Foysal Toshin**
+
 tanvirfoysaltoshin@gmail.com
+
 [gitlab.com/tanvirfoysaltoshin/project-tree-utility](https://gitlab.com/tanvirfoysaltoshin/project-tree-utility)
