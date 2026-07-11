@@ -1,0 +1,9 @@
+data/store_data.json
+data/store_trees/
+*.log
+*.tmp
+*.temp
+.vscode/
+.idea/
+*.swp
+*.swo
