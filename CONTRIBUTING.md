@@ -5,6 +5,16 @@ need to get started.
 
 ---
 
+## 🛠️ Our Branching Strategy
+
+To keep our production environment completely stable, we use two primary branches:
+* **`main`**: Contains the stable, production-ready code. **Do not branch off or target Merge Requests directly to `main`.**
+* **`dev`**: The staging ground for all active development and upcoming features. 
+
+**Rule:** Always create your feature or bugfix branches off of `dev`, and ensure your final Merge Request targets `dev`.
+
+---
+
 ## Before you begin
 
 - Check the [issue tracker](https://gitlab.com/tanvirfoysaltoshin/project-tree-utility/-/issues)
@@ -159,14 +169,17 @@ Document what you tested in your merge request description.
 ## Submitting a merge request
 
 1. Fork the repository on GitLab
-2. Create a branch following the naming convention above
-3. Make your changes
-4. Update `CHANGELOG.md` under an `## [Unreleased]` heading
-5. Update `README.md` if you added a subcommand, format, or flag
-6. Open a merge request against `main` with:
+2. Clone your fork locally and switch to the development branch: `git checkout dev`.
+3. Create a branch off of dev following the branch naming convention above (`git checkout -b feat/your-feature`).
+4. Make your changes and commit them cleanly.
+5. Update `CHANGELOG.md` under an `## [Unreleased]` heading
+6. Update `README.md` if you added a subcommand, format, or flag
+7. Push your branch to your fork and open a Merge Request with:
    - A clear title (`fix: verify ignores .treeignore` or `feat: add xml export`)
    - A description of what changed and why
    - What you tested manually
+
+⚠️ **Important:** Ensure your Merge Request targets our `dev` branch, not `main`.
 
 ---
 
