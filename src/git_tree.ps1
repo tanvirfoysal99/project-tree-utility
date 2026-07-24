@@ -48,6 +48,17 @@
 #>
 
 param(
+<<<<<<< HEAD
+    [string]$ArgsFile      = '',
+    [string]$Provider      = '',
+    [string]$RepoUrl       = '',
+    [string]$Branch        = '',
+    [string]$OutputFile    = '',
+    [string]$OutputFormat  = '',
+    [string]$SubFolder     = '',
+    [int]$MaxDepth         = 0,
+    [string]$ExcludeList   = 'node_modules,.git,dist,build,.next,.wrangler',
+=======
     [Parameter(Mandatory=$true)][ValidateSet('github','gitlab')][string]$Provider,
     [Parameter(Mandatory=$true)][string]$RepoUrl,
     [Parameter(Mandatory=$true)][string]$Branch,
@@ -56,10 +67,39 @@ param(
     [string]$SubFolder   = '',
     [int]$MaxDepth       = 0,
     [string]$ExcludeList = 'node_modules,.git,dist,build,.next,.wrangler',
+>>>>>>> 46d4b9c9fbbd365c47daec7faeed0746fc47c166
     [string]$GitLabBaseUrl = 'https://gitlab.com',
     [switch]$Ci
 )
 
+<<<<<<< HEAD
+# When called from git_tree.bat, all args are passed via a temp file to avoid
+# CMD quoting issues with URLs, paths, and special characters.
+if ($ArgsFile -and (Test-Path -LiteralPath $ArgsFile)) {
+    $lines         = [System.IO.File]::ReadAllLines($ArgsFile)
+    $Provider      = if ($lines.Count -gt 0) { $lines[0].Trim() } else { '' }
+    $RepoUrl       = if ($lines.Count -gt 1) { $lines[1].Trim() } else { '' }
+    $Branch        = if ($lines.Count -gt 2) { $lines[2].Trim() } else { '' }
+    $OutputFile    = if ($lines.Count -gt 3) { $lines[3].Trim() } else { '' }
+    $OutputFormat  = if ($lines.Count -gt 4) { $lines[4].Trim() } else { 'txt' }
+    $SubFolder     = if ($lines.Count -gt 5) { $lines[5].Trim() } else { '' }
+    $mdRaw         = if ($lines.Count -gt 6) { $lines[6].Trim() } else { '0' }
+    $MaxDepth      = if ($mdRaw -match '^\d+$') { [int]$mdRaw } else { 0 }
+    $ExcludeList   = if ($lines.Count -gt 7 -and $lines[7].Trim() -ne '') { $lines[7].Trim() } else { 'node_modules,.git,dist,build,.next,.wrangler' }
+    $GitLabBaseUrl = if ($lines.Count -gt 8 -and $lines[8].Trim() -ne '') { $lines[8].Trim() } else { 'https://gitlab.com' }
+}
+
+# Validate required fields
+$validProviders = @('github','gitlab')
+$validFormats   = @('importable','md','txt','json','yaml')
+if ($Provider -notin $validProviders) { Write-Host "[ERROR] Provider must be 'github' or 'gitlab'."; exit 1 }
+if (-not $RepoUrl)     { Write-Host '[ERROR] RepoUrl is required.';    exit 1 }
+if (-not $Branch)      { Write-Host '[ERROR] Branch is required.';     exit 1 }
+if (-not $OutputFile)  { Write-Host '[ERROR] OutputFile is required.'; exit 1 }
+if ($OutputFormat -notin $validFormats) { $OutputFormat = 'txt' }
+
+=======
+>>>>>>> 46d4b9c9fbbd365c47daec7faeed0746fc47c166
 $ErrorActionPreference = 'Stop'
 
 # ─────────────────────────────────────────────────────────────
@@ -180,7 +220,15 @@ function Invoke-ApiRequest {
 
     $headers = @{ 'User-Agent' = 'ProjectTreeUtility/2.0' }
     if ($Pat -ne '') {
+<<<<<<< HEAD
+        if ($PatPrefix -ne '') {
+            $headers[$PatHeader] = "$PatPrefix $Pat"
+        } else {
+            $headers[$PatHeader] = $Pat
+        }
+=======
         $headers[$PatHeader] = "$PatPrefix $Pat"
+>>>>>>> 46d4b9c9fbbd365c47daec7faeed0746fc47c166
     }
 
     try {

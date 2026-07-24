@@ -1,7 +1,14 @@
 param(
+<<<<<<< HEAD
+    [string]$ArgsFile = '',
+    [string]$RootPath = '',
+    [string]$OutputFile = '',
+    [string]$OutputFormat = '',
+=======
     [Parameter(Mandatory = $true)][string]$RootPath,
     [Parameter(Mandatory = $true)][string]$OutputFile,
     [Parameter(Mandatory = $true)][ValidateSet('importable', 'md', 'txt', 'json', 'yaml')][string]$OutputFormat,
+>>>>>>> 46d4b9c9fbbd365c47daec7faeed0746fc47c166
     [int]$MaxDepth = 5,
     [ValidateSet('all', 'folders', 'files')][string]$ShowMode = 'all',
     [string]$ExcludeList = '',
@@ -10,6 +17,38 @@ param(
     [switch]$Ci
 )
 
+<<<<<<< HEAD
+# When called from export.bat, paths are passed via a temp file to avoid
+# CMD quoting issues with spaces and special characters in directory names.
+if ($ArgsFile -and (Test-Path -LiteralPath $ArgsFile)) {
+    $lines = [System.IO.File]::ReadAllLines($ArgsFile)
+    $RootPath     = if ($lines.Count -gt 0) { $lines[0].Trim() } else { '' }
+    $OutputFile   = if ($lines.Count -gt 1) { $lines[1].Trim() } else { '' }
+    $OutputFormat = if ($lines.Count -gt 2) { $lines[2].Trim() } else { 'md' }
+    $mdRaw        = if ($lines.Count -gt 3) { $lines[3].Trim() } else { '5' }
+    $MaxDepth     = if ($mdRaw -match '^\d+$') { [int]$mdRaw } else { 5 }
+    $ShowMode     = if ($lines.Count -gt 4 -and $lines[4].Trim() -ne '') { $lines[4].Trim() } else { 'all' }
+    $ExtraExclude = if ($lines.Count -gt 5) { $lines[5].Trim() } else { '' }
+    $IgnoreFile   = if ($lines.Count -gt 6) { $lines[6].Trim() } else { '' }
+}
+
+if (-not $RootPath) {
+    Write-Host '[ERROR] RootPath is required.'
+    exit 2
+}
+if (-not $OutputFile) {
+    Write-Host '[ERROR] OutputFile is required.'
+    exit 2
+}
+if (-not $OutputFormat) { $OutputFormat = 'md' }
+$validFormats = @('importable','md','txt','json','yaml')
+if ($OutputFormat -notin $validFormats) {
+    Write-Host "[ERROR] OutputFormat must be one of: $($validFormats -join ', ')"
+    exit 2
+}
+
+=======
+>>>>>>> 46d4b9c9fbbd365c47daec7faeed0746fc47c166
 $ErrorActionPreference = 'Stop'
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
