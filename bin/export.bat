@@ -65,11 +65,14 @@ if "!show_choice!"=="2" set "SHOW_MODE=folders"
 if "!show_choice!"=="3" set "SHOW_MODE=files"
 
 echo.
+<<<<<<< HEAD
 set /p depth_choice="Max folder depth (press Enter for default 5): "
 if "!depth_choice!"=="" set "depth_choice=5"
 set "MAX_DEPTH=!depth_choice!"
 
 echo.
+=======
+>>>>>>> 46d4b9c9fbbd365c47daec7faeed0746fc47c166
 echo Export format:
 echo [1] Markdown  ^(.md^)
 echo [2] Plain text  ^(.txt^)
@@ -186,6 +189,7 @@ call :run_export
 exit /b %errorlevel%
 
 :run_export
+<<<<<<< HEAD
 set "PTU_ARGS=%TEMP%\ptu_export_args_%RANDOM%.txt"
 (
     echo !SCAN_DIR!
@@ -200,6 +204,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\export.ps1" -Ar
 set "_ec=%errorlevel%"
 del /f /q "!PTU_ARGS!" 2>nul
 exit /b %_ec%
+=======
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\export.ps1" -RootPath "%SCAN_DIR%" -OutputFile "%OUT_FILE%" -OutputFormat "%FORMAT_TYPE%" -MaxDepth %MAX_DEPTH% -ShowMode "%SHOW_MODE%" -ExtraExclude "%extra_exclude%" -IgnoreFile "%IGNORE_FILE%"
+exit /b %errorlevel%
+>>>>>>> 46d4b9c9fbbd365c47daec7faeed0746fc47c166
 
 :exp_exit
 if "%CI_MODE%"=="0" pause

@@ -1,8 +1,14 @@
 param(
+<<<<<<< HEAD
     [string]$ArgsFile = '',
     [string]$RootPath = '',
     [string]$OutputFile = '',
     [string]$OutputFormat = '',
+=======
+    [Parameter(Mandatory = $true)][string]$RootPath,
+    [Parameter(Mandatory = $true)][string]$OutputFile,
+    [Parameter(Mandatory = $true)][ValidateSet('importable', 'md', 'txt', 'json', 'yaml')][string]$OutputFormat,
+>>>>>>> 46d4b9c9fbbd365c47daec7faeed0746fc47c166
     [int]$MaxDepth = 5,
     [ValidateSet('all', 'folders', 'files')][string]$ShowMode = 'all',
     [string]$ExcludeList = '',
@@ -11,6 +17,7 @@ param(
     [switch]$Ci
 )
 
+<<<<<<< HEAD
 # When called from export.bat, paths are passed via a temp file to avoid
 # CMD quoting issues with spaces and special characters in directory names.
 if ($ArgsFile -and (Test-Path -LiteralPath $ArgsFile)) {
@@ -40,6 +47,8 @@ if ($OutputFormat -notin $validFormats) {
     exit 2
 }
 
+=======
+>>>>>>> 46d4b9c9fbbd365c47daec7faeed0746fc47c166
 $ErrorActionPreference = 'Stop'
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path

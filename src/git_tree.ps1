@@ -48,6 +48,7 @@
 #>
 
 param(
+<<<<<<< HEAD
     [string]$ArgsFile      = '',
     [string]$Provider      = '',
     [string]$RepoUrl       = '',
@@ -57,10 +58,21 @@ param(
     [string]$SubFolder     = '',
     [int]$MaxDepth         = 0,
     [string]$ExcludeList   = 'node_modules,.git,dist,build,.next,.wrangler',
+=======
+    [Parameter(Mandatory=$true)][ValidateSet('github','gitlab')][string]$Provider,
+    [Parameter(Mandatory=$true)][string]$RepoUrl,
+    [Parameter(Mandatory=$true)][string]$Branch,
+    [Parameter(Mandatory=$true)][string]$OutputFile,
+    [Parameter(Mandatory=$true)][ValidateSet('importable','md','txt','json','yaml')][string]$OutputFormat,
+    [string]$SubFolder   = '',
+    [int]$MaxDepth       = 0,
+    [string]$ExcludeList = 'node_modules,.git,dist,build,.next,.wrangler',
+>>>>>>> 46d4b9c9fbbd365c47daec7faeed0746fc47c166
     [string]$GitLabBaseUrl = 'https://gitlab.com',
     [switch]$Ci
 )
 
+<<<<<<< HEAD
 # When called from git_tree.bat, all args are passed via a temp file to avoid
 # CMD quoting issues with URLs, paths, and special characters.
 if ($ArgsFile -and (Test-Path -LiteralPath $ArgsFile)) {
@@ -86,6 +98,8 @@ if (-not $Branch)      { Write-Host '[ERROR] Branch is required.';     exit 1 }
 if (-not $OutputFile)  { Write-Host '[ERROR] OutputFile is required.'; exit 1 }
 if ($OutputFormat -notin $validFormats) { $OutputFormat = 'txt' }
 
+=======
+>>>>>>> 46d4b9c9fbbd365c47daec7faeed0746fc47c166
 $ErrorActionPreference = 'Stop'
 
 # ─────────────────────────────────────────────────────────────
@@ -206,11 +220,15 @@ function Invoke-ApiRequest {
 
     $headers = @{ 'User-Agent' = 'ProjectTreeUtility/2.0' }
     if ($Pat -ne '') {
+<<<<<<< HEAD
         if ($PatPrefix -ne '') {
             $headers[$PatHeader] = "$PatPrefix $Pat"
         } else {
             $headers[$PatHeader] = $Pat
         }
+=======
+        $headers[$PatHeader] = "$PatPrefix $Pat"
+>>>>>>> 46d4b9c9fbbd365c47daec7faeed0746fc47c166
     }
 
     try {

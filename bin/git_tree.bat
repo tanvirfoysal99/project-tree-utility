@@ -173,6 +173,7 @@ call :run_git_tree
 exit /b %errorlevel%
 
 :run_git_tree
+<<<<<<< HEAD
 set "GTU_ARGS=%TEMP%\ptu_gittree_args_%RANDOM%.txt"
 (
     echo !PROVIDER!
@@ -189,6 +190,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%GT_PS1%" -ArgsFile "!GTU_A
 set "_ec=%errorlevel%"
 del /f /q "!GTU_ARGS!" 2>nul
 exit /b %_ec%
+=======
+powershell -NoProfile -ExecutionPolicy Bypass -File "%GT_PS1%" -Provider "%PROVIDER%" -RepoUrl "%REPO_URL%" -Branch "%BRANCH%" -OutputFile "%OUT_FILE%" -OutputFormat "%FORMAT_TYPE%" -SubFolder "%SUBFOLDER%" -MaxDepth %MAX_DEPTH% -ExcludeList "%EXCLUDE_LIST%" -GitLabBaseUrl "%GITLAB_BASE%" -Ci
+exit /b %errorlevel%
+>>>>>>> 46d4b9c9fbbd365c47daec7faeed0746fc47c166
 
 :gt_exit
 if "%CI_MODE%"=="0" pause
