@@ -9,10 +9,8 @@ jobs:
       - name: Run regression suites on Windows PowerShell 5.1
         shell: powershell
         run: |
-          Get-ChildItem tests/regression-*.ps1 | Sort-Object Name | ForEach-Object {
-            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $_.FullName
-            if ($LASTEXITCODE -ne 0) { throw "Regression suite failed: $($_.Name)" }
-          }
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tests/run-regressions.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Regression checks failed.' }
   template-builds:
     runs-on: windows-latest
     timeout-minutes: 15

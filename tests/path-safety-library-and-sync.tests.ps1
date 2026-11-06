@@ -1,4 +1,4 @@
-# Run with Windows PowerShell 5.1: powershell -NoProfile -File tests/regression-01-06.ps1
+# Run with Windows PowerShell 5.1: powershell.exe -NoProfile -File tests/path-safety-library-and-sync.tests.ps1
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('ptu-regression-' + [guid]::NewGuid().ToString('N'))

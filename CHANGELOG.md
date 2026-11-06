@@ -5,6 +5,9 @@ All notable changes to Project Tree Utility will be documented here.
 Format: `## [version] - YYYY-MM-DD`
 Change types: `Added`, `Changed`, `Fixed`, `Removed`, `Security`
 
+Versioned entries describe historical releases. For the current command contract,
+see [the command reference](docs/CLI.md).
+
 ---
 
 ## [Unreleased]
@@ -58,12 +61,20 @@ Change types: `Added`, `Changed`, `Fixed`, `Removed`, `Security`
 
 ### Added
 
-- Windows PowerShell 5.1 regression checks for fixes 01-06.
-- Windows PowerShell 5.1 regression checks for fixes 07-12.
-- Windows PowerShell 5.1 regression checks for fixes 13-18.
-- Windows PowerShell 5.1 regression checks for fixes 19-24.
-- Windows PowerShell 5.1 regression checks for fixes 25-30, an aggregate runner,
-  GitHub/GitLab Windows CI, and optional disposable template build checks.
+- Windows PowerShell 5.1 regression suites covering path safety/library/sync,
+  scaffolding/formats, structure validation/CLI, scans/merge/transactions/credentials,
+  and runtime/export/HTTP/watch behavior.
+- An aggregate regression runner, GitHub/GitLab Windows CI, and optional
+  disposable React/Vite and Hono template build checks.
+- Dedicated command, format, operations/recovery, and test coverage guides.
+
+### Changed
+
+- Replaced issue-number test filenames with descriptive coverage-based names.
+- Made GitHub CI use the shared test runner and fail when no suites are found.
+- Rewrote current documentation against the implemented CLI, corrected repository
+  links, and documented the two-branch develop/master workflow.
+- Documented the version checker's remaining legacy GitLab target explicitly.
 
 ## [2.2.0] - 2026-07-11
 
@@ -122,8 +133,7 @@ Change types: `Added`, `Changed`, `Fixed`, `Removed`, `Security`
 
 - **`version` subcommand** (`bin/version.bat` + `src/version.ps1`) — displays
   the current version and optionally checks the GitLab releases API for a newer
-  tag. Supports `--check`, `--ci`, and an optional `-Token` parameter for
-  private instances.
+  tag. Supports `--check` and `--ci`.
 
 - **`export.ps1` refactor** — export logic moved from a VBScript-generated
   temp file into a proper standalone `src/export.ps1` with a clean parameter
@@ -149,5 +159,5 @@ Change types: `Added`, `Changed`, `Fixed`, `Removed`, `Security`
 
 - All structure file entries are validated for path traversal, dangerous names,
   and format consistency before any disk write — unchanged from v2.1.x.
-- PAT handling in `git_tree.ps1` and `auth.ps1` uses `SecureString` and is
-  never persisted to disk.
+- Credential handling keeps tokens out of project files; persistent credentials
+  are managed by Windows Credential Manager.

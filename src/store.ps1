@@ -9,7 +9,9 @@
     All JSON read/write, file copy, rename, delete, slug generation,
     orphan detection, and console table rendering live here.
 
-    Never run directly. Called by store.bat via -File or -Command.
+    Dot-sourced by the CLI and action adapters; use tree.bat library publicly.
+    Mutations use the transaction helpers for locking, atomic index replacement,
+    rollback, and interrupted-operation recovery.
 
 .NOTES
     Functions exported:

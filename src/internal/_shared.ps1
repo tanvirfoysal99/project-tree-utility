@@ -4,12 +4,11 @@
 #
 #  Sourced by every subcommand. Never run directly.
 #  Provides: format detection, parsing, emoji mapping,
-#            path safety, file stubs, VBScript runner,
-#            and output helpers.
+#            path safety, file stubs, configuration,
+#            and shared scan/merge/output helpers.
 #
-#  Calling convention from .bat files:
-#    powershell -ExecutionPolicy Bypass -Command
-#      ". '$sharedPs1'; Invoke-SomeFunction -Param value"
+#  Dot-sourced by PowerShell backends. Public commands enter through
+#  tree.bat or bin wrappers and are routed by src/cli.ps1.
 # =============================================================
 
 # ─────────────────────────────────────────────────────────────

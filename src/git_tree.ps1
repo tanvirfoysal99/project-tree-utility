@@ -12,8 +12,10 @@
       - GitHub (github.com)
       - GitLab (gitlab.com + self-hosted instances)
 
-    PAT is collected via Read-Host -AsSecureString inside this script.
-    It is never written to disk, never echoed, never passed as an argument.
+    Credentials are looked up in Windows Credential Manager and available Git
+    credential helpers. Interactive use can prompt for a PAT when needed;
+    CI permits anonymous requests and never prompts. Tokens are not written
+    to project files, echoed, or accepted as literal command arguments.
 
 .PARAMETER Provider
     'github' or 'gitlab'
@@ -31,7 +33,7 @@
     Full path to the output file.
 
 .PARAMETER OutputFormat
-    'importable' | 'md' | 'txt'
+    'importable' | 'md' | 'txt' | 'json' | 'yaml'
 
 .PARAMETER SubFolder
     Optional subfolder path to filter to. e.g. 'src' or 'packages/core'
