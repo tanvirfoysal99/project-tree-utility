@@ -1,4 +1,17 @@
 @echo off
+setlocal EnableExtensions DisableDelayedExpansion
+if defined PTU_LEGACY goto legacy_entry
+if not "%~1"=="" goto cli_entry
+if /i "%TREE_CI%"=="1" goto cli_entry
+if /i "%TREE_CI%"=="true" goto cli_entry
+if /i "%TREE_CI%"=="yes" goto cli_entry
+goto legacy_entry
+:cli_entry
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\cli.ps1" merge %*
+exit /b %errorlevel%
+:legacy_entry
+endlocal
+@echo off
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
@@ -30,6 +43,7 @@ cd /d "%~dp0"
 set "SHARED=%~dp0..\src\internal\_shared.ps1"
 set "MERGE_PS1=%~dp0..\src\merge_tree.ps1"
 set "DETECTION=%~dp0detection.bat"
+set "MRG_RESULT=2"
 set "SPACE_UNIT_A=2"
 set "SPACE_UNIT_B=2"
 
@@ -77,15 +91,14 @@ if not exist "!FILE_A!" (
     goto mrg_exit
 )
 
-for /f "usebackq delims=" %%D in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    ". '%SHARED:\=/%'; Write-Output (Get-StructureFormat -FilePath '!FILE_A:\=/!')"`) do set "FORMAT_A=%%D"
+for /f "usebackq delims=" %%D in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action DetectMergeA`) do set "FORMAT_A=%%D"
 
 if "!FORMAT_A!"=="empty"   ( echo [ERROR] File A is empty. & goto mrg_exit )
 if "!FORMAT_A!"=="unknown" ( call :ask_format FORMAT_A SPACE_UNIT_A )
 echo [OK] File A: !FORMAT_A! format
 
 call "%~dp0security.bat" VALIDATE_FILE "!FILE_A!" "!FORMAT_A!"
-if %errorlevel% neq 0 ( echo [ERROR] File A failed validation. & goto mrg_exit )
+if errorlevel 1 ( echo [ERROR] File A failed validation. & goto mrg_exit )
 
 :: ── Step 2: File B ──────────────────────────────────────────
 :mrg_step2
@@ -112,15 +125,14 @@ if not exist "!FILE_B!" (
     goto mrg_exit
 )
 
-for /f "usebackq delims=" %%D in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    ". '%SHARED:\=/%'; Write-Output (Get-StructureFormat -FilePath '!FILE_B:\=/!')"`) do set "FORMAT_B=%%D"
+for /f "usebackq delims=" %%D in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action DetectMergeB`) do set "FORMAT_B=%%D"
 
 if "!FORMAT_B!"=="empty"   ( echo [ERROR] File B is empty. & goto mrg_exit )
 if "!FORMAT_B!"=="unknown" ( call :ask_format FORMAT_B SPACE_UNIT_B )
 echo [OK] File B: !FORMAT_B! format
 
 call "%~dp0security.bat" VALIDATE_FILE "!FILE_B!" "!FORMAT_B!"
-if %errorlevel% neq 0 ( echo [ERROR] File B failed validation. & goto mrg_exit )
+if errorlevel 1 ( echo [ERROR] File B failed validation. & goto mrg_exit )
 
 :: ── Step 3: Optional analyse ────────────────────────────────
 :mrg_step3
@@ -167,10 +179,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%MERGE_PS1%" ^
     -SpaceUnitA !SPACE_UNIT_A! ^
     -SpaceUnitB !SPACE_UNIT_B!
 
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo [ERROR] Merge failed.
     goto mrg_exit
 )
+
+set "MRG_RESULT=0"
 
 :: ── Step 7: Clipboard ───────────────────────────────────────
 echo.
@@ -240,5 +254,5 @@ if "!_man_fmt!"=="4" (
 exit /b 0
 
 :mrg_exit
-endlocal
 pause
+endlocal & exit /b %MRG_RESULT%

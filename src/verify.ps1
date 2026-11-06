@@ -2,15 +2,23 @@ param(
     [string]$StructureFile = '',
     [string]$LivePath = '',
     [string]$IgnoreFile = '',
+    [string]$Format = '',
+    [int]$SpaceUnit = 2,
     [switch]$Sync,
     [switch]$DeleteExtras,
     [switch]$Ci
 )
 
 $ErrorActionPreference = 'Stop'
+$created=0;$deleted=0
+try {
+if($SpaceUnit -lt 1 -or $SpaceUnit -gt 32){throw 'Spaces per depth level must be between 1 and 32.'}
+if ($env:TREE_CI -match '^(?i:1|true|yes)$') { $Ci = $true }
+if (-not $StructureFile -and $env:VERIFY_PRELOAD_FILE) { $StructureFile=$env:VERIFY_PRELOAD_FILE; Remove-Item Env:VERIFY_PRELOAD_FILE }
+if ($Ci -and (-not $StructureFile -or -not $LivePath)) { Write-Host '[ERROR] CI verification requires structure and live directory paths.'; exit 2 }
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-Set-Location $scriptRoot
+Set-Location -LiteralPath $scriptRoot
 
 $sharedPath = Join-Path $scriptRoot 'internal\_shared.ps1'
 if (-not (Test-Path -LiteralPath $sharedPath)) {
@@ -340,13 +348,13 @@ if (-not (Test-Path -LiteralPath $structureFile)) {
     exit 2
 }
 
-$format = Get-StructureFormat -FilePath $structureFile
+if (-not $Format) { $Format = Get-StructureFormat -FilePath $structureFile }
 if ($format -eq 'empty') {
     Write-Color '[ERROR] Structure file is empty or contains only comments.' Red
     exit 2
 }
 
-if ($format -eq 'unknown') {
+if ($format -in @('unknown','ambiguous')) {
     if ($Ci) {
         Write-Color '[ERROR] Structure file format could not be auto-detected in CI mode.' Red
         exit 2
@@ -429,7 +437,7 @@ if ($LivePath -and $LivePath.Trim()) {
     }
 }
 
-if (-not (Test-Path -LiteralPath $base)) {
+if (-not (Test-Path -LiteralPath $base -PathType Container)) {
     Write-Color "[ERROR] Directory not found: $base" Red
     exit 2
 }
@@ -437,7 +445,7 @@ if (-not (Test-Path -LiteralPath $base)) {
 Write-Host ''
 $extraExclude = if ($Ci) { '' } else { Read-Host 'Extra folders to exclude (comma-separated, or Enter to skip)' }
 $treeConfig = Get-TreeConfig -RootPath $base -IgnoreFile $IgnoreFile -ExtraExclude $extraExclude
-$defaultMaxDepth = if ($treeConfig.MaxDepth) { [string]$treeConfig.MaxDepth } else { '5' }
+$defaultMaxDepth = if ($null -ne $treeConfig.MaxDepth) { [string]$treeConfig.MaxDepth } else { '5' }
 $maxDepthInput = Prompt-Default 'Max depth to scan (default 5)' $defaultMaxDepth -CiMode:$Ci
 [int]$maxDepth = $maxDepthInput
 
@@ -450,50 +458,17 @@ if ($saveReport -match '^(?i)y$') {
 }
 
 try {
-    $expectedFiles = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    $expectedFolders = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    $actualFiles = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    $actualFolders = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $excludeFolders=Get-ExcludeList -RootPath $base -ExtraExclude $extraExclude -IgnoreFile $IgnoreFile
+    $comparison=Get-TreeComparison $base @($entries) $excludeFolders $maxDepth
+    $expectedEntryMap=@{}
+    foreach($entry in $entries){$expectedEntryMap[[IO.Path]::GetFullPath((Join-Path $base $entry.Path))]=$entry}
+    $liveItems=$comparison.LiveItems
+    $missingFiles=$comparison.MissingFiles;$missingFolders=$comparison.MissingFolders
+    $extraFiles=$comparison.ExtraFiles;$extraFolders=$comparison.ExtraFolders
+    $matchedFiles=$comparison.MatchedFiles;$matchedFolders=$comparison.MatchedFolders
+    $movedFiles = @(Find-MovedEntries -MissingPaths $missingFiles -ExtraPaths $extraFiles)
+    $movedFolders = @(Find-MovedFolders -MissingPaths $missingFolders -ExtraPaths $extraFolders -ExpectedEntries $entries -LiveItems $liveItems -BasePath $base)
 
-    $pathStack = @{}
-    $expectedEntryMap = @{}
-    foreach ($entry in $entries) {
-        $fullPath = Resolve-EntryPath -Entry $entry -BasePath $base -PathStack $pathStack
-        # Always update pathStack: any entry can be a parent regardless of trailing slash
-        $pathStack[$entry.Depth] = $fullPath
-        $expectedEntryMap[$fullPath] = $entry
-        if ($entry.IsDir) {
-            [void]$expectedFolders.Add($fullPath)
-        } else {
-            [void]$expectedFiles.Add($fullPath)
-        }
-    }
-
-    $excludeFolders = Get-ExcludeList -RootPath $base -ExtraExclude $extraExclude -IgnoreFile $IgnoreFile
-    $liveItems = Get-LimitedItems -Path $base -CurrentDepth 0 -MaxDepth $maxDepth -ExcludeFolders $excludeFolders
-
-    foreach ($item in $liveItems) {
-        if ($item.PSIsContainer) {
-            [void]$actualFolders.Add($item.FullName)
-        } else {
-            [void]$actualFiles.Add($item.FullName)
-        }
-    }
-
-    $missingFiles = @($expectedFiles | Where-Object { -not $actualFiles.Contains($_) })
-    $missingFolders = @($expectedFolders | Where-Object { -not $actualFolders.Contains($_) })
-    $extraFiles = @($actualFiles | Where-Object { -not $expectedFiles.Contains($_) })
-    $extraFolders = @($actualFolders | Where-Object { -not $expectedFolders.Contains($_) })
-    $matchedFiles = @($expectedFiles | Where-Object { $actualFiles.Contains($_) })
-    $matchedFolders = @($expectedFolders | Where-Object { $actualFolders.Contains($_) })
-
-    $movedFiles = Find-MovedEntries -MissingPaths $missingFiles -ExtraPaths $extraFiles
-    $movedFolders = Find-MovedFolders -MissingPaths $missingFolders -ExtraPaths $extraFolders -ExpectedEntries $entries -LiveItems $liveItems -BasePath $base
-
-    $missingFiles = @($missingFiles | Where-Object { $movedFiles.FromPath -notcontains $_ })
-    $extraFiles = @($extraFiles | Where-Object { $movedFiles.ToPath -notcontains $_ })
-    $missingFolders = @($missingFolders | Where-Object { $movedFolders.FromPath -notcontains $_ })
-    $extraFolders = @($extraFolders | Where-Object { $movedFolders.ToPath -notcontains $_ })
 
     $sep = [string]::new([char]0x2500, 45)
     $sb = [System.Text.StringBuilder]::new()
@@ -504,12 +479,13 @@ try {
     [void]$sb.AppendLine('  Generated : ' + $timestamp)
     [void]$sb.AppendLine('  Structure : ' + $structureFile)
     [void]$sb.AppendLine('  Live Dir  : ' + $base)
+    [void]$sb.AppendLine('  Out of scope: ' + $comparison.OutOfScope.Count)
     [void]$sb.AppendLine($sep)
     [void]$sb.AppendLine('')
     [void]$sb.AppendLine('  [MATCHED]  Folders : ' + $matchedFolders.Count)
     [void]$sb.AppendLine('  [MATCHED]  Files   : ' + $matchedFiles.Count)
-    [void]$sb.AppendLine('  [MOVED]    Folders : ' + $movedFolders.Count)
-    [void]$sb.AppendLine('  [MOVED]    Files   : ' + $movedFiles.Count)
+    [void]$sb.AppendLine('  [POSSIBLE MOVE]    Folders : ' + $movedFolders.Count)
+    [void]$sb.AppendLine('  [POSSIBLE MOVE]    Files   : ' + $movedFiles.Count)
     [void]$sb.AppendLine('  [MISSING]  Folders : ' + $missingFolders.Count)
     [void]$sb.AppendLine('  [MISSING]  Files   : ' + $missingFiles.Count)
     [void]$sb.AppendLine('  [EXTRA]    Folders : ' + $extraFolders.Count)
@@ -535,7 +511,7 @@ try {
 
     if ($movedFolders.Count -gt 0) {
         [void]$sb.AppendLine('')
-        [void]$sb.AppendLine('  MOVED FOLDERS:')
+        [void]$sb.AppendLine('  POSSIBLE MOVED FOLDERS (suggestions only):')
         foreach ($move in $movedFolders) {
             [void]$sb.AppendLine('    ~ ' + $move.FromPath + ' -> ' + $move.ToPath)
         }
@@ -543,7 +519,7 @@ try {
 
     if ($movedFiles.Count -gt 0) {
         [void]$sb.AppendLine('')
-        [void]$sb.AppendLine('  MOVED FILES:')
+        [void]$sb.AppendLine('  POSSIBLE MOVED FILES (suggestions only):')
         foreach ($move in $movedFiles) {
             [void]$sb.AppendLine('    ~ ' + $move.FromPath + ' -> ' + $move.ToPath)
         }
@@ -567,7 +543,7 @@ try {
 
     if ($matchedFiles.Count -gt 0) {
         $baseRoot = (Get-NormalizedFullPath -Path $base).TrimEnd('\')
-        $matchedFileInfos = foreach ($path in ($matchedFiles | Sort-Object)) {
+        $matchedFileInfos = @(foreach ($path in ($matchedFiles | Sort-Object)) {
             $item = Get-Item -LiteralPath $path
             $relativePath = $path
             $basePrefix = $baseRoot + '\'
@@ -583,6 +559,7 @@ try {
             }
         }
 
+        )
         $pathWidth = 24
         $sizeWidth = 8
         $totalBytes = [long]0
@@ -604,12 +581,12 @@ try {
         [void]$sb.AppendLine('')
         [void]$sb.AppendLine('  FILE METADATA:')
         foreach ($info in $matchedFileInfos) {
-            [void]$sb.AppendLine(('    [OK]  {0,-' + $pathWidth + '}  {1,' + $sizeWidth + '}  {2}') -f $info.RelativePath, $info.SizeText, $info.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss'))
+            [void]$sb.AppendLine((('    [OK]  {0,-' + $pathWidth + '}  {1,' + $sizeWidth + '}  {2}') -f $info.RelativePath, $info.SizeText, $info.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss')))
         }
-        [void]$sb.AppendLine(('  Matched files: {0}  |  Total size: {1}  |  Newest: {2}') -f $matchedFileInfos.Count, ('{0:F1} MB' -f ($totalBytes / 1MB)), $newestWrite.ToString('yyyy-MM-dd HH:mm:ss'))
+        [void]$sb.AppendLine((('  Matched files: {0}  |  Total size: {1}  |  Newest: {2}') -f $matchedFileInfos.Count, ('{0:F1} MB' -f ($totalBytes / 1MB)), $newestWrite.ToString('yyyy-MM-dd HH:mm:ss')))
     }
 
-    $driftCount = $missingFolders.Count + $missingFiles.Count + $extraFolders.Count + $extraFiles.Count + $movedFolders.Count + $movedFiles.Count
+    $driftCount = $missingFolders.Count + $missingFiles.Count + $extraFolders.Count + $extraFiles.Count
     [void]$sb.AppendLine('')
     [void]$sb.AppendLine($sep)
     if ($driftCount -eq 0) {
@@ -620,6 +597,7 @@ try {
     [void]$sb.AppendLine($sep)
 
     $reportText = $sb.ToString()
+    if ($Sync) { $reportText = 'BEFORE SYNC' + [Environment]::NewLine + $reportText }
     Write-Host $reportText
 
     if ($Sync) {
@@ -627,7 +605,15 @@ try {
         $created = 0
         $deleted = 0
 
+        # Validate the complete mutation plan before creating any entry.
+        foreach ($path in @($missingFolders) + @($missingFiles) + @($extraFiles) + @($extraFolders)) {
+            if (-not (Test-SafePath -CandidatePath $path -AllowedBase $base)) {
+                throw ('Unsafe sync destination (outside base or reparse point): ' + $path)
+            }
+        }
+
         foreach ($path in $missingFolders) {
+            if (-not (Test-SafePath -CandidatePath $path -AllowedBase $base)) { throw ('Unsafe sync path: ' + $path) }
             if (-not (Test-Path -LiteralPath $path)) {
                 New-Item -ItemType Directory -Path $path -Force | Out-Null
                 $created++
@@ -636,6 +622,7 @@ try {
         }
 
         foreach ($path in $missingFiles) {
+            if (-not (Test-SafePath -CandidatePath $path -AllowedBase $base)) { throw ('Unsafe sync path: ' + $path) }
             if (-not (Test-Path -LiteralPath $path)) {
                 $entry = $expectedEntryMap[$path]
                 $parentDir = Split-Path -Path $path -Parent
@@ -649,8 +636,14 @@ try {
             }
         }
 
+        $protectedMovePaths=@($movedFiles | ForEach-Object {$_.ToPath})+@($movedFolders | ForEach-Object {$_.ToPath})
+        function Test-PossibleMoveSource([string]$Path){
+            foreach($protected in $protectedMovePaths){if($Path -eq $protected -or $Path.StartsWith($protected+'\',[StringComparison]::OrdinalIgnoreCase) -or $protected.StartsWith($Path+'\',[StringComparison]::OrdinalIgnoreCase)){return $true}}
+            return $false
+        }
         if ($DeleteExtras) {
             foreach ($path in ($extraFiles | Sort-Object -Descending)) {
+                if(Test-PossibleMoveSource $path){Write-Host ('[SKIP] Possible move source preserved: '+$path);continue}
                 if ((Test-Path -LiteralPath $path) -and (Test-SafePath -CandidatePath $path -AllowedBase $base)) {
                     Remove-Item -LiteralPath $path -Force
                     $deleted++
@@ -658,8 +651,17 @@ try {
                 }
             }
             foreach ($path in ($extraFolders | Sort-Object { $_.Length } -Descending)) {
+                if(Test-PossibleMoveSource $path){Write-Host ('[SKIP] Possible move source preserved: '+$path);continue}
                 if ((Test-Path -LiteralPath $path) -and (Test-SafePath -CandidatePath $path -AllowedBase $base)) {
-                    Remove-Item -LiteralPath $path -Recurse -Force
+                    # Never recurse: excluded, hidden, unscanned or newly created
+                    # children must survive. Directory.Delete(false) fails if a
+                    # child appears between enumeration and deletion.
+                    $children = @(Get-ChildItem -LiteralPath $path -Force -ErrorAction Stop)
+                    if ($children.Count -gt 0) {
+                        Write-Color ('[SKIP] Preserved nonempty folder: ' + $path) Yellow
+                        continue
+                    }
+                    [System.IO.Directory]::Delete($path, $false)
                     $deleted++
                     Write-Color ('[SYNC] Deleted folder: ' + $path) Cyan
                 }
@@ -667,6 +669,15 @@ try {
         }
 
         Write-Color ('[SYNC] Created: ' + $created + '  Deleted: ' + $deleted) Cyan
+        $after=Get-TreeComparison $base @($entries) $excludeFolders $maxDepth
+        $driftCount=$after.MissingFiles.Count+$after.MissingFolders.Count+$after.ExtraFiles.Count+$after.ExtraFolders.Count
+        $post=New-Object Text.StringBuilder
+        [void]$post.AppendLine('AFTER SYNC (fresh scan)')
+        [void]$post.AppendLine(('  Missing files: {0}; folders: {1}; extra files: {2}; folders: {3}' -f $after.MissingFiles.Count,$after.MissingFolders.Count,$after.ExtraFiles.Count,$after.ExtraFolders.Count))
+        foreach($kind in @('MissingFiles','MissingFolders','ExtraFiles','ExtraFolders')){foreach($remainingPath in $after.$kind){[void]$post.AppendLine('  '+$kind+': '+$remainingPath)}}
+        [void]$post.AppendLine($(if($driftCount){'  RESULT: DRIFT REMAINS - '+$driftCount}else{'  RESULT: NO DRIFT'}))
+        $reportText += [Environment]::NewLine+$post.ToString()
+        Write-Host $post.ToString()
     }
 
     if ($reportFile) {
@@ -686,5 +697,8 @@ try {
 } catch {
     Write-Color '[ERROR] Verification could not complete.' Red
     Write-Color $_.Exception.Message Red
+    if($Sync){Write-Host ('[SYNC] Partial result: created '+$created+'; deleted '+$deleted+'. A successful final comparison was not produced.')}
     exit 2
 }
+
+} catch { Write-Host ('[ERROR] ' + $_.Exception.Message); exit 2 }

@@ -1,9 +1,23 @@
 @echo off
+setlocal EnableExtensions DisableDelayedExpansion
+if defined PTU_LEGACY goto legacy_entry
+if not "%~1"=="" goto cli_entry
+if /i "%TREE_CI%"=="1" goto cli_entry
+if /i "%TREE_CI%"=="true" goto cli_entry
+if /i "%TREE_CI%"=="yes" goto cli_entry
+goto legacy_entry
+:cli_entry
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\cli.ps1" export %*
+exit /b %errorlevel%
+:legacy_entry
+endlocal
+@echo off
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
 set "SHARED=%~dp0..\src\internal\_shared.ps1"
 set "CI_MODE=0"
+set "EXP_RESULT=2"
 set "IGNORE_FILE="
 
 if /i "%~1"=="--ci" (
@@ -65,14 +79,11 @@ if "!show_choice!"=="2" set "SHOW_MODE=folders"
 if "!show_choice!"=="3" set "SHOW_MODE=files"
 
 echo.
-<<<<<<< HEAD
 set /p depth_choice="Max folder depth (press Enter for default 5): "
 if "!depth_choice!"=="" set "depth_choice=5"
 set "MAX_DEPTH=!depth_choice!"
 
 echo.
-=======
->>>>>>> 46d4b9c9fbbd365c47daec7faeed0746fc47c166
 echo Export format:
 echo [1] Markdown  ^(.md^)
 echo [2] Plain text  ^(.txt^)
@@ -112,6 +123,7 @@ echo.
 echo [INFO] Scanning directory ...
 call :run_export
 if errorlevel 1 exit /b %errorlevel%
+set "EXP_RESULT=0"
 
 echo.
 set /p do_clip="Copy output to clipboard? (y/N): "
@@ -189,26 +201,9 @@ call :run_export
 exit /b %errorlevel%
 
 :run_export
-<<<<<<< HEAD
-set "PTU_ARGS=%TEMP%\ptu_export_args_%RANDOM%.txt"
-(
-    echo !SCAN_DIR!
-    echo !OUT_FILE!
-    echo !FORMAT_TYPE!
-    echo !MAX_DEPTH!
-    echo !SHOW_MODE!
-    echo !extra_exclude!
-    echo !IGNORE_FILE!
-) > "!PTU_ARGS!"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\export.ps1" -ArgsFile "!PTU_ARGS!"
-set "_ec=%errorlevel%"
-del /f /q "!PTU_ARGS!" 2>nul
-exit /b %_ec%
-=======
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\export.ps1" -RootPath "%SCAN_DIR%" -OutputFile "%OUT_FILE%" -OutputFormat "%FORMAT_TYPE%" -MaxDepth %MAX_DEPTH% -ShowMode "%SHOW_MODE%" -ExtraExclude "%extra_exclude%" -IgnoreFile "%IGNORE_FILE%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\export.ps1" -FromEnvironment
 exit /b %errorlevel%
->>>>>>> 46d4b9c9fbbd365c47daec7faeed0746fc47c166
 
 :exp_exit
 if "%CI_MODE%"=="0" pause
-endlocal
+endlocal & exit /b %EXP_RESULT%

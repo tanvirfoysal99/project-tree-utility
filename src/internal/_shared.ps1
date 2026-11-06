@@ -18,58 +18,31 @@
 
 function Get-StructureFormat {
     param([string]$FilePath)
-    $ext = [System.IO.Path]::GetExtension($FilePath).ToLowerInvariant()
+    $lines = @(Get-Content -LiteralPath $FilePath -Encoding UTF8 -ErrorAction Stop |
+        Where-Object { $_.Trim() -and -not $_.TrimStart().StartsWith('#') })
+    if (-not $lines.Count) { return 'empty' }
+    $ext = [IO.Path]::GetExtension($FilePath).ToLowerInvariant()
     if ($ext -eq '.json') { return 'json' }
-    if ($ext -in @('.yaml', '.yml')) { return 'yaml' }
-
-    $lines = @(
-        Get-Content -Path $FilePath -ErrorAction SilentlyContinue |
-        Where-Object { $_.Trim() -ne '' -and -not $_.TrimStart().StartsWith('#') }
-    )
-    if (-not $lines) { return 'empty' }
-    $first = $lines[0].Trim()
-    if ($first -match '^[\{\[]')                       { return 'json' }
-    if ($first -match '^[A-Za-z_][\w-]*\s*:\s*$' -or $first -match '^-+\s*[\w-]+\s*:\s*') { return 'yaml' }
-    if ($first -match '^-+\s+\S')                     { return 'dash'    }
-    if ($first -match '\t')                            { return 'tab'     }
-    if ($first -match '[\u251C\u2514\u2502]')         { return 'treesym' }
-    if ($first -match '^\s+\S')                       { return 'space'   }
+    if ($ext -in @('.yaml','.yml')) { return 'yaml' }
+    $first = $lines[0].TrimStart()
+    if ($first -match '^[\[{]') { return 'json' }
+    if ($first -match '^(?:-\s+)?(?:name|path|type|children|entries)\s*:' -or $first -eq '-') { return 'yaml' }
+    if (@($lines | Where-Object { $_ -match '[\u251c\u2514]' }).Count) { return 'treesym' }
+    if (@($lines | Where-Object { $_ -match '^-+\s+\S' }).Count -eq $lines.Count) { return 'dash' }
+    $tabs = @($lines | Where-Object { $_ -match '^\t+\S' }).Count
+    $spaces = @($lines | Where-Object { $_ -match '^ +\S' }).Count
+    if ($tabs -and $spaces) { return 'unknown' }
+    if ($tabs) { return 'tab' }
+    if ($spaces) { return 'space' }
+    # A flat list is valid in both tab and space layouts: do not guess.
     return 'unknown'
 }
 
 function Confirm-StructureFormat {
     param([string]$FilePath, [string]$Format, [int]$SpaceUnit = 2)
-    try {
-        switch ($Format) {
-            'json' {
-                $null = (Get-Content -LiteralPath $FilePath -Raw -ErrorAction Stop) | ConvertFrom-Json
-                return $true
-            }
-            'yaml' {
-                $null = ConvertFrom-TreeYaml -FilePath $FilePath
-                return $true
-            }
-            default {
-                $lines = @(
-                    Get-Content -Path $FilePath -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Trim() -ne '' -and -not $_.TrimStart().StartsWith('#') }
-                )
-                if (-not $lines) { return $false }
-                switch ($Format) {
-                    'dash'    { foreach ($l in $lines) { if ($l -notmatch '^-+\s+\S') { return $false } } }
-                    'tab'     { foreach ($l in $lines) { if ($l -notmatch '^\t*\S')   { return $false } } }
-                    'treesym' { foreach ($l in $lines) { if ($l -notmatch '^[\s\u2502]*[\u251C\u2514\-|]*\s*\S') { return $false } } }
-                    'space'   { foreach ($l in $lines) { if ($l -notmatch '^\s*\S')   { return $false } } }
-                    default   { return $false }
-                }
-                return $true
-            }
-        }
-    } catch {
-        return $false
-    }
+    try { $null = Read-StructureFile $FilePath $Format $SpaceUnit; return $true }
+    catch { return $false }
 }
-
 # ─────────────────────────────────────────────────────────────
 # SECTION 2: Structure Parser
 # ─────────────────────────────────────────────────────────────
@@ -79,7 +52,8 @@ function Parse-StructureLine {
         [string]$Line,
         [string]$Format,
         [int]$SpaceUnit  = 2,
-        [bool]$IsFirst   = $false
+        [bool]$IsFirst   = $false,
+        [bool]$HasRoot   = $false
     )
     switch ($Format) {
         'dash' {
@@ -87,7 +61,7 @@ function Parse-StructureLine {
                 $decorated = Split-TreeNodeDecorators -Text $Matches[2].Trim()
                 $name = $decorated.Path.Trim()
                 $contentDirective = ''
-                if ($decorated.Content) { $contentDirective = '@content:' + $decorated.Content }
+                $contentDirective = $decorated.ContentDirective
                 return @{ Depth = $Matches[1].Length; Name = $name; IsDir = $name.EndsWith('/'); Template = $decorated.Template; ContentDirective = $contentDirective }
             }
             return $null
@@ -98,7 +72,7 @@ function Parse-StructureLine {
                 $name = $decorated.Path.Trim()
                 if (-not $name) { return $null }
                 $contentDirective = ''
-                if ($decorated.Content) { $contentDirective = '@content:' + $decorated.Content }
+                $contentDirective = $decorated.ContentDirective
                 return @{ Depth = $Matches[1].Length + 1; Name = $name; IsDir = $name.EndsWith('/'); Template = $decorated.Template; ContentDirective = $contentDirective }
             }
             return $null
@@ -112,9 +86,9 @@ function Parse-StructureLine {
                 $name         = $decorated.Path.Trim()
                 if (-not $name) { return $null }
                 if ($IsFirst -and -not $hasConnector) { $depth = 1 }
-                else { $depth = [math]::Floor($indent / 4) + 2 }
+                else { $depth = [math]::Floor($indent / 4) + $(if ($HasRoot) { 2 } else { 1 }) }
                 $contentDirective = ''
-                if ($decorated.Content) { $contentDirective = '@content:' + $decorated.Content }
+                $contentDirective = $decorated.ContentDirective
                 return @{ Depth = $depth; Name = $name; IsDir = $name.EndsWith('/'); Template = $decorated.Template; ContentDirective = $contentDirective }
             }
             return $null
@@ -127,7 +101,7 @@ function Parse-StructureLine {
                 if ($SpaceUnit -le 0) { $SpaceUnit = 2 }
                 $depth = [math]::Floor($Matches[1].Length / $SpaceUnit) + 1
                 $contentDirective = ''
-                if ($decorated.Content) { $contentDirective = '@content:' + $decorated.Content }
+                $contentDirective = $decorated.ContentDirective
                 return @{ Depth = $depth; Name = $name; IsDir = $name.EndsWith('/'); Template = $decorated.Template; ContentDirective = $contentDirective }
             }
             return $null
@@ -136,42 +110,95 @@ function Parse-StructureLine {
     return $null
 }
 
-function Read-StructureFile {
-    param([string]$FilePath, [string]$Format, [int]$SpaceUnit = 2, [string]$TemplateName = '')
-
-    if ($Format -eq 'template') {
-        $preset = Get-TemplatePreset -Name $TemplateName
-        if (-not $preset) { return @() }
-        return @(ConvertFrom-TreeNode -Node $preset.Entries -Depth 1 -ParentPath '')
+function Assert-StructureEntries {
+    param([AllowEmptyCollection()][object[]]$Entries)
+    if (-not $Entries.Count) { throw 'Structure contains no entries.' }
+    $paths = @{}
+    foreach ($entry in $Entries) {
+        $location = if ($entry.Line) { 'line ' + $entry.Line } else { 'node ' + $entry.Path }
+        if (Test-DangerousName $entry.Path) { throw ('Invalid path at ' + $location + ': ' + $entry.Path) }
+        $path = $entry.Path.Replace('/','\').TrimEnd('\')
+        if ($paths.ContainsKey($path)) { throw ('Duplicate path at ' + $location + ': ' + $path) }
+        $entry.Path = $path
+        $paths[$path] = $entry
     }
-    if ($Format -eq 'json') { return @(ConvertFrom-TreeJson -FilePath $FilePath) }
-    if ($Format -eq 'yaml') {
-        return @(ConvertFrom-TreeYaml -FilePath $FilePath)
-    }
-
-    $rawLines = @(
-        Get-Content -Path $FilePath |
-        Where-Object { $_.Trim() -ne '' -and -not $_.TrimStart().StartsWith('#') }
-    )
-    $entries = [System.Collections.Generic.List[object]]::new()
-    $pathStack = @{}
-    for ($i = 0; $i -lt $rawLines.Count; $i++) {
-            $p = Parse-StructureLine -Line $rawLines[$i] -Format $Format -SpaceUnit $SpaceUnit -IsFirst ($i -eq 0)
-        if ($p) {
-            $parent = if ($p.Depth -eq 1) { '' } else { $pathStack[$p.Depth - 1] }
-            $cleanName = $p.Name.TrimEnd('/')
-            $p.Path = if ($parent) { Join-Path $parent $cleanName } else { $cleanName }
-            $pathStack[$p.Depth] = $p.Path
-            $null = $entries.Add([pscustomobject]$p)
+    foreach ($entry in $Entries) {
+        $parent = [IO.Path]::GetDirectoryName($entry.Path)
+        while ($parent) {
+            if ($paths.ContainsKey($parent) -and -not $paths[$parent].IsDir) { throw ('File cannot be a parent: ' + $parent) }
+            $parent = [IO.Path]::GetDirectoryName($parent)
         }
     }
-    return $entries
 }
 
-# ─────────────────────────────────────────────────────────────
-# SECTION 3: Emoji Mapping
-# ─────────────────────────────────────────────────────────────
-
+function Read-StructureFile {
+    param([string]$FilePath, [string]$Format, [int]$SpaceUnit = 2, [string]$TemplateName = '')
+    if ($Format -notin @('template','json','yaml','dash','tab','space','treesym')) { throw ('Unknown structure format: ' + $Format) }
+    if ($SpaceUnit -lt 1) { throw 'Spaces per indentation level must be positive.' }
+    if ($Format -in @('template','json','yaml')) {
+        $entries = @()
+        switch ($Format) {
+            template {
+                $preset = Get-TemplatePreset $TemplateName
+                if (-not $preset) { throw ('Unknown template: ' + $TemplateName) }
+                $entries = @(ConvertFrom-TreeNode -Node $preset.Entries -Depth 1 -ParentPath '')
+            }
+            json { $entries = @(ConvertFrom-TreeJson $FilePath) }
+            yaml { $entries = @(ConvertFrom-TreeYaml $FilePath) }
+        }
+        Assert-StructureEntries $entries
+        return $entries
+    }
+    $lines = @(Get-Content -LiteralPath $FilePath -Encoding UTF8 -ErrorAction Stop)
+    $entries = New-Object 'System.Collections.Generic.List[object]'
+    $stack = @{}
+    $hasRoot = $false
+    for ($i=0; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
+        if (-not $line.Trim() -or $line.TrimStart().StartsWith('#')) { continue }
+        $first = $entries.Count -eq 0
+        $valid = switch ($Format) {
+            dash { $line -match '^-+\s+\S' }
+            tab { $line -match '^\t*[^\s].*' }
+            space { $line -match '^( *)(\S.*)$' -and ($Matches[1].Length % $SpaceUnit -eq 0) }
+            treesym {
+                if ($first -and $line -notmatch '[\u251c\u2514]') { $hasRoot=$true; $true }
+                else { $clean=$line.Replace([string][char]0x2502,' '); $clean -match '^( *)(?:[\u251c\u2514][\u2500-]{2,})\s+\S' -and ($Matches[1].Length % 4 -eq 0) }
+            }
+        }
+        if (-not $valid) { throw ('Invalid ' + $Format + ' entry or indentation at line ' + ($i+1)) }
+        $parsed = Parse-StructureLine $line $Format $SpaceUnit $first $hasRoot
+        if (-not $parsed) { throw ('Unparseable entry at line ' + ($i+1)) }
+        if ($parsed.Name.EndsWith('\')) { $parsed.IsDir=$true; $parsed.Name=$parsed.Name.TrimEnd('\')+'/' }
+        # Check the untrimmed path too: parsing must not conceal invalid suffixes.
+        $rawName = switch ($Format) {
+            dash { $line -replace '^-+\s+','' }
+            tab { $line.TrimStart([char]9) }
+            space { $line.TrimStart(' ') }
+            treesym { $line -replace '^[\s\u2502]*[\u251c\u2514]?[\u2500-]*\s*','' }
+        }
+        $rawName = ($rawName -split '\s+@(?:content|content64|template):',2)[0]
+        if (Test-DangerousName $rawName.TrimEnd('/')) { throw ('Invalid name at line ' + ($i+1) + ': ' + $rawName) }
+        foreach ($key in @($stack.Keys)) { if ($key -ge $parsed.Depth) { $stack.Remove($key) } }
+        $parent = $null
+        if ($parsed.Depth -gt 1) {
+            if (-not $stack.ContainsKey($parsed.Depth-1)) { throw ('Missing parent or skipped depth at line ' + ($i+1)) }
+            $parent=$stack[$parsed.Depth-1]
+            if (-not $parent.IsDir) {
+                if ($Format -eq 'treesym') { $parent.IsDir=$true; $parent.Name=$parent.Name.TrimEnd('/')+'/' }
+                else { throw ('File cannot have children at line ' + ($i+1)) }
+            }
+        }
+        if ($first -and $hasRoot) { $parsed.IsDir=$true; $parsed.Name=$parsed.Name.TrimEnd('/')+'/' }
+        $parsed.Path = if ($parent) { Join-Path $parent.Path $parsed.Name.TrimEnd('/') } else { $parsed.Name.TrimEnd('/') }
+        $parsed.Line=$i+1
+        $entry=[pscustomobject]$parsed
+        $stack[$parsed.Depth]=$entry
+        $entries.Add($entry)
+    }
+    Assert-StructureEntries $entries.ToArray()
+    return $entries.ToArray()
+}
 function Get-Emoji {
     param([System.IO.FileSystemInfo]$Item)
     if (-not $Item.PSIsContainer) {
@@ -284,19 +311,55 @@ function Test-SafePath {
     try {
         $resolved    = [System.IO.Path]::GetFullPath($CandidatePath)
         $baseResolved = [System.IO.Path]::GetFullPath($AllowedBase).TrimEnd('\') + '\'
-        return $resolved.StartsWith($baseResolved, [System.StringComparison]::OrdinalIgnoreCase)
+        if (-not $resolved.StartsWith($baseResolved, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+        # Check the destination and all existing ancestors, including the base.
+        # Lexical containment alone cannot prevent writes through junctions.
+        $cursor = $resolved
+        while ($cursor) {
+            try {
+                $attributes = [System.IO.File]::GetAttributes($cursor)
+                if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+            } catch [System.IO.FileNotFoundException] {
+                # A missing leaf is normal when validating a planned write.
+            } catch [System.IO.DirectoryNotFoundException] {
+            }
+            $parent = [System.IO.Path]::GetDirectoryName($cursor.TrimEnd('\'))
+            if (-not $parent -or $parent -eq $cursor) { break }
+            $cursor = $parent
+        }
+        return $true
     } catch {
         return $false
     }
 }
 
+function Resolve-SafeProjectRoot {
+    param([string]$TargetBase, [string]$ProjectName)
+    if ((Test-DangerousName $ProjectName) -or [string]::IsNullOrWhiteSpace($ProjectName) -or
+        $ProjectName -in @('.', '..') -or
+        $ProjectName -match '[\\/:\x00-\x1F*?"<>|]' -or
+        $ProjectName -match '[. ]$' -or
+        $ProjectName -match '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$') {
+        throw 'Project name must be a valid single Windows directory name.'
+    }
+    $basePath = [System.IO.Path]::GetFullPath($TargetBase)
+    $projectRoot = Join-Path $basePath $ProjectName
+    if (-not (Test-SafePath -CandidatePath $projectRoot -AllowedBase $basePath)) {
+        throw 'Project root is outside the target directory or crosses a reparse point.'
+    }
+    return $projectRoot
+}
+
 function Test-DangerousName {
     param([string]$Name)
-    if ($Name -match '\.\.')                                          { return $true }
-    if ($Name -match '^[A-Za-z]:\\' -or $Name -match '^\\\\')        { return $true }
-    if ($Name -match '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$') { return $true }
-    if ($Name -match '[\x00-\x1F]')                                   { return $true }
-    if ($Name -match '[*?"<>|]')                                      { return $true }
+    if ([string]::IsNullOrWhiteSpace($Name) -or $Name -match '^[\\/]' -or $Name -match '[\\/]{2}' -or $Name -match '[:\x00-\x1F*?"<>|]') { return $true }
+    $parts = $Name.Replace('/','\').TrimEnd('\').Split('\')
+    foreach ($part in $parts) {
+        if (-not $part -or $part.Length -gt 255 -or $part -in @('.','..') -or $part -match '[. ]$') { return $true }
+        # Windows also reserves the superscript digits 1, 2 and 3 in device names.
+        $deviceStem = ($part -split '\.',2)[0].TrimEnd(' ')
+        if ($deviceStem -match '^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9\u00b9\u00b2\u00b3]|LPT[1-9\u00b9\u00b2\u00b3])$') { return $true }
+    }
     return $false
 }
 
@@ -386,6 +449,7 @@ function Get-TreeConfig {
         if (-not [System.IO.Path]::IsPathRooted($explicit)) {
             $explicit = Join-Path $RootPath $explicit
         }
+        if(-not (Test-Path -LiteralPath $explicit -PathType Leaf -ErrorAction Stop)){throw ('Specified ignore file not found: '+$explicit)}
         $candidateFiles.Add($explicit) | Out-Null
     }
     foreach ($name in @('.treeignore', '.treerc')) {
@@ -395,7 +459,7 @@ function Get-TreeConfig {
     foreach ($configPath in $candidateFiles) {
         if (-not (Test-Path -LiteralPath $configPath)) { continue }
         $config.IgnoreFile = $configPath
-        $lines = Get-Content -LiteralPath $configPath -ErrorAction SilentlyContinue
+        $lines = Get-Content -LiteralPath $configPath -Encoding UTF8 -ErrorAction Stop
         foreach ($raw in $lines) {
             $line = $raw.Trim()
             if (-not $line -or $line.StartsWith('#') -or $line.StartsWith(';')) { continue }
@@ -446,7 +510,7 @@ function Get-TreeConfig {
     return $config
 }
 
-function Get-TemplatePreset {
+function Get-TemplatePresetCore {
     param([string]$Name)
 
     $key = ([string]$Name).Trim().ToLowerInvariant()
@@ -510,6 +574,7 @@ function Split-TreeNodeDecorators {
         Path = $Text.Trim()
         Template = ''
         Content = ''
+        ContentDirective = ''
     }
 
     $base = $result.Path
@@ -525,8 +590,12 @@ function Split-TreeNodeDecorators {
             if (-not $clean) { continue }
             if ($clean -match '^@template:(.+)$') {
                 $result.Template = $Matches[1].Trim()
-            } elseif ($clean -match '^@content:(.+)$') {
+            } elseif ($clean -match '^@content:(.*)$') {
                 $result.Content = $Matches[1]
+                $result.ContentDirective = $clean
+            } elseif ($clean -match '^@content64:(.*)$') {
+                $result.Content = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Matches[1]))
+                $result.ContentDirective = $clean
             }
         }
     }
@@ -543,7 +612,8 @@ function ConvertFrom-TreeNode {
     )
 
     $entries = New-Object System.Collections.Generic.List[object]
-    if ($null -eq $Node) { return $entries }
+    if ($null -eq $Node) { throw ('Null tree node under ' + $ParentPath) }
+    if ($Node -is [System.Collections.IDictionary]) { $Node = [pscustomobject]$Node }
 
     if (($Node -is [System.Array]) -or ($Node -is [System.Collections.IList]) -or ($Node -is [System.Collections.ICollection] -and -not ($Node -is [pscustomobject]))) {
         foreach ($child in $Node) {
@@ -553,6 +623,16 @@ function ConvertFrom-TreeNode {
         return $entries
     }
 
+    if ($Node -isnot [pscustomobject] -and $Node -isnot [string]) { throw ('Tree node must be an object or path string under ' + $ParentPath) }
+    if ($Node -is [pscustomobject]) {
+        foreach ($property in $Node.PSObject.Properties) {
+            if ($property.Name -notin @('Name','Path','Type','IsDir','Children','Entries','Template','Content','ContentDirective')) { throw ('Unknown tree property: ' + $property.Name) }
+            if ($property.Name -in @('Name','Path','Type','Template','Content','ContentDirective') -and $property.Value -isnot [string]) { throw ('Tree property must be a string: ' + $property.Name) }
+            if ($property.Name -in @('Children','Entries') -and $null -ne $property.Value -and $property.Value -isnot [System.Array]) { throw ('Tree children must be an array under ' + $ParentPath) }
+        }
+        if ($Node.PSObject.Properties.Name -contains 'Children' -and $Node.PSObject.Properties.Name -contains 'Entries') { throw 'Use children or entries, not both.' }
+        if ($Node.PSObject.Properties.Name -contains 'Name' -and $Node.PSObject.Properties.Name -contains 'Path') { throw 'Use name or path, not both.' }
+    }
     $rawPath = ''
     foreach ($propName in @('Path','path','Name','name')) {
         if ($Node.PSObject.Properties.Name -contains $propName) {
@@ -577,11 +657,15 @@ function ConvertFrom-TreeNode {
                 foreach ($entry in $nested) { $entries.Add($entry) | Out-Null }
             }
         }
+        if (-not $children) { throw ('Tree node requires a name, path, or nonempty children array under ' + $ParentPath) }
         return $entries
     }
 
+    $rawName = ($rawPath -split '\s+@(?:content|content64|template):',2)[0]
+    if (Test-DangerousName $rawName) { throw ('Invalid tree node path: ' + $rawName) }
     $decorated = Split-TreeNodeDecorators -Text $rawPath
-    $cleanPath = $decorated.Path.Trim().TrimEnd('/')
+    $hadTrailingSlash = $decorated.Path.Trim().EndsWith('/') -or $decorated.Path.Trim().EndsWith('\')
+    $cleanPath = $decorated.Path.Trim().TrimEnd('/','\')
     if (-not $cleanPath) { return $entries }
 
     $typeHint = ''
@@ -591,6 +675,7 @@ function ConvertFrom-TreeNode {
             break
         }
     }
+    if ($typeHint -and $typeHint -notmatch '^(file|blob|dir|directory|folder|tree)$') { throw ('Unknown tree node type: ' + $typeHint) }
 
     $hasChildren = $false
     foreach ($propName in @('Children','children','Entries','entries')) {
@@ -600,7 +685,14 @@ function ConvertFrom-TreeNode {
         }
     }
 
-    $isDir = $hasChildren -or $cleanPath.EndsWith('/') -or ($typeHint -match '^(dir|folder|tree)$')
+    $explicitIsDir = $false
+    if ($Node.PSObject.Properties.Name -contains 'IsDir') {
+        if ($Node.IsDir -isnot [bool]) { throw 'IsDir must be a boolean.' }
+        $explicitIsDir = $Node.IsDir
+    }
+    $isDir = $hasChildren -or $hadTrailingSlash -or $explicitIsDir -or ($typeHint -match '^(dir|directory|folder|tree)$')
+    if (($typeHint -match '^(file|blob)$' -and $isDir) -or
+        ($Node.PSObject.Properties.Name -contains 'IsDir' -and -not $Node.IsDir -and $isDir)) { throw ('Conflicting file/directory indicators: ' + $rawPath) }
     $fullPath = if ($ParentPath) { Join-Path $ParentPath $cleanPath } else { $cleanPath }
     $entry = [pscustomobject]@{
         Depth            = $Depth
@@ -610,6 +702,7 @@ function ConvertFrom-TreeNode {
         Template         = ''
         ContentDirective = ''
         Content          = ''
+        HasContent       = $false
     }
 
     foreach ($propName in @('Template','template')) {
@@ -626,13 +719,14 @@ function ConvertFrom-TreeNode {
             break
         }
     }
-    if (-not $entry.ContentDirective -and $decorated.Content) {
-        $entry.ContentDirective = '@content:' + $decorated.Content
+    if (-not $entry.ContentDirective -and $decorated.ContentDirective) {
+        $entry.ContentDirective = $decorated.ContentDirective
     }
 
     foreach ($propName in @('Content','content')) {
         if ($Node.PSObject.Properties.Name -contains $propName) {
             $entry.Content = [string]$Node.$propName
+            $entry.HasContent = $true
             break
         }
     }
@@ -658,122 +752,17 @@ function ConvertFrom-TreeNode {
 
 function ConvertFrom-TreeJson {
     param([Parameter(Mandatory = $true)][string]$FilePath)
-    $raw = Get-Content -LiteralPath $FilePath -Raw -ErrorAction Stop
+    $raw = Get-Content -LiteralPath $FilePath -Raw -Encoding UTF8 -ErrorAction Stop
     $data = $raw | ConvertFrom-Json
     return @(ConvertFrom-TreeNode -Node $data -Depth 1 -ParentPath '')
 }
 
 function ConvertFrom-TreeYaml {
     param([Parameter(Mandatory = $true)][string]$FilePath)
-
-    function ConvertFrom-YamlScalar {
-        param([string]$Value)
-        $v = $Value.Trim()
-        if ($v -eq 'null' -or $v -eq '~') { return $null }
-        if ($v -eq 'true') { return $true }
-        if ($v -eq 'false') { return $false }
-        if ($v -match '^-?\d+$') { return [int64]$v }
-        if ($v -match '^-?\d+\.\d+$') { return [double]$v }
-        if (($v.StartsWith('"') -and $v.EndsWith('"')) -or ($v.StartsWith("'") -and $v.EndsWith("'"))) {
-            return $v.Substring(1, $v.Length - 2)
-        }
-        return $v
-    }
-
-    $rawLines = Get-Content -LiteralPath $FilePath -ErrorAction Stop
-    $tokens = New-Object System.Collections.Generic.List[object]
-    foreach ($raw in $rawLines) {
-        $line = $raw -replace '\s+$', ''
-        if (-not $line.Trim() -or $line.TrimStart().StartsWith('#')) { continue }
-        $indent = $line.Length - $line.TrimStart().Length
-        $tokens.Add([pscustomobject]@{ Indent = $indent; Text = $line.TrimStart() }) | Out-Null
-    }
-
-    function Parse-YamlBlock {
-        param(
-            [Parameter(Mandatory = $true)][System.Collections.Generic.List[object]]$Tokens,
-            [Parameter(Mandatory = $true)][ref]$Index,
-            [int]$BaseIndent = 0
-        )
-
-        $resultList = New-Object System.Collections.Generic.List[object]
-        $resultMap = [ordered]@{}
-        $mode = ''
-
-        while ($Index.Value -lt $Tokens.Count) {
-            $token = $Tokens[$Index.Value]
-            if ($token.Indent -lt $BaseIndent) { break }
-            if ($mode -eq '') {
-                $mode = if ($token.Text.StartsWith('- ')) { 'list' } else { 'map' }
-            }
-
-            if ($mode -eq 'list') {
-                if ($token.Indent -ne $BaseIndent -or -not $token.Text.StartsWith('- ')) { break }
-                $itemText = $token.Text.Substring(2).Trim()
-                $item = [ordered]@{}
-
-                if ($itemText) {
-                    if ($itemText -match '^([^:]+):\s*(.*)$') {
-                        $item[$Matches[1].Trim()] = ConvertFrom-YamlScalar $Matches[2]
-                    } else {
-                        $item['path'] = ConvertFrom-YamlScalar $itemText
-                    }
-                }
-
-                $Index.Value++
-                if ($Index.Value -lt $Tokens.Count -and $Tokens[$Index.Value].Indent -gt $token.Indent) {
-                    $nestedIndex = $Index.Value
-                    $nested = Parse-YamlBlock -Tokens $Tokens -Index ([ref]$nestedIndex) -BaseIndent $Tokens[$Index.Value].Indent
-                    $Index.Value = $nestedIndex
-                    if ($nested -is [System.Collections.IEnumerable] -and -not ($nested -is [string])) {
-                        $item['children'] = @($nested)
-                    } elseif ($nested) {
-                        foreach ($key in $nested.PSObject.Properties.Name) { $item[$key] = $nested.$key }
-                    }
-                }
-                $resultList.Add([pscustomobject]$item) | Out-Null
-                continue
-            }
-
-            if ($token.Indent -ne $BaseIndent -or $token.Text.StartsWith('- ')) { break }
-            if ($token.Text -match '^([^:]+):\s*(.*)$') {
-                $key = $Matches[1].Trim()
-                $value = $Matches[2]
-                $Index.Value++
-
-                if ($value -eq '') {
-                    if ($Index.Value -lt $Tokens.Count -and $Tokens[$Index.Value].Indent -gt $token.Indent) {
-                        $nestedIndex = $Index.Value
-                        $nested = Parse-YamlBlock -Tokens $Tokens -Index ([ref]$nestedIndex) -BaseIndent $Tokens[$Index.Value].Indent
-                        $Index.Value = $nestedIndex
-                        $resultMap[$key] = $nested
-                    } else {
-                        $resultMap[$key] = $null
-                    }
-                } elseif ($value -eq '|') {
-                    $block = New-Object System.Collections.Generic.List[string]
-                    while ($Index.Value -lt $Tokens.Count -and $Tokens[$Index.Value].Indent -gt $token.Indent) {
-                        $block.Add($Tokens[$Index.Value].Text) | Out-Null
-                        $Index.Value++
-                    }
-                    $resultMap[$key] = ($block -join [Environment]::NewLine)
-                } else {
-                    $resultMap[$key] = ConvertFrom-YamlScalar $value
-                }
-            } else {
-                $Index.Value++
-            }
-        }
-
-        if ($mode -eq 'list') { return $resultList }
-        return [pscustomobject]$resultMap
-    }
-
-    $index = 0
-    $parsed = Parse-YamlBlock -Tokens $tokens -Index ([ref]$index) -BaseIndent 0
-    return @(ConvertFrom-TreeNode -Node $parsed -Depth 1 -ParentPath '')
+    . (Join-Path $PSScriptRoot '_yaml.ps1')
+    $document = Read-TreeYamlDocument -FilePath $FilePath
+    return @(ConvertFrom-TreeNode -Node $document -Depth 1 -ParentPath '')
 }
-
 function Get-StructureEntryContent {
     param(
         [Parameter(Mandatory = $true)][object]$Entry,
@@ -781,7 +770,10 @@ function Get-StructureEntryContent {
         [string]$TemplateName = ''
     )
 
-    if ($Entry.Content -and $Entry.Content.Trim()) { return $Entry.Content }
+    if ($Entry.HasContent -or ($Entry.Content -and $Entry.Content.Trim())) { return $Entry.Content }
+    if ($Entry.ContentDirective -and $Entry.ContentDirective.StartsWith('@content64:')) {
+        return [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Entry.ContentDirective.Substring(11)))
+    }
     if ($Entry.ContentDirective -and $Entry.ContentDirective -match '^@content:(.*)$') {
         return $Matches[1]
     }
@@ -808,15 +800,23 @@ function Get-StructureEntryContent {
 
 function ConvertTo-TreeNodeObject {
     param(
-        [Parameter(Mandatory = $true)][object[]]$Entries,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Entries,
         [Parameter(Mandatory = $true)][string]$RootName
     )
 
+    $normalized=New-Object 'System.Collections.Generic.List[object]'
+    $known=@{}
+    foreach($entry in $Entries){$known[$entry.Path.Replace('\','/').Trim('/') ]=$true;$normalized.Add($entry)}
+    foreach($entry in $Entries){
+        $parent=[IO.Path]::GetDirectoryName($entry.Path.Replace('/','\'))
+        while($parent){$key=$parent.Replace('\','/');if(-not $known.ContainsKey($key)){$known[$key]=$true;$normalized.Add([pscustomobject]@{Path=$key;IsDir=$true;Type='tree'})};$parent=[IO.Path]::GetDirectoryName($parent)}
+    }
+    $Entries=$normalized.ToArray()
     $groups = @{}
     foreach ($entry in $Entries) {
         $path = [string]$entry.Path
         if (-not $path) { continue }
-        $cleanPath = $path.TrimEnd('/').TrimStart('/')
+        $cleanPath = $path.Replace('\','/').TrimEnd('/').TrimStart('/')
         if (-not $cleanPath) { continue }
 
         $parentPath = if ($cleanPath.Contains('/')) { $cleanPath.Substring(0, $cleanPath.LastIndexOf('/')) } else { '' }
@@ -842,10 +842,16 @@ function ConvertTo-TreeNodeObject {
             $node.children = @()
             if ($groups.ContainsKey($Path)) {
                 foreach ($child in @($groups[$Path])) {
-                    $childPath = [string]$child.Path.TrimEnd('/').TrimStart('/')
+                    $childPath = ([string]$child.Path).Replace('\','/').TrimEnd('/').TrimStart('/')
                     $childName = [System.IO.Path]::GetFileName($childPath)
                     $childIsDir = ($child.Type -eq 'tree' -or $child.IsDir)
-                    $node.children += (Build-Node -Name $childName -Path $childPath -IsDir $childIsDir)
+                    $childNode = Build-Node -Name $childName -Path $childPath -IsDir $childIsDir
+                    foreach ($field in @('Content','ContentDirective','Template')) {
+                        if ($child.PSObject.Properties.Name -contains $field -and ($child.$field -or ($field -eq 'Content' -and $child.HasContent))) {
+                            $childNode | Add-Member -NotePropertyName $field -NotePropertyValue $child.$field
+                        }
+                    }
+                    $node.children += $childNode
                 }
             }
         }
@@ -858,13 +864,13 @@ function ConvertTo-TreeNodeObject {
 
 function ConvertTo-TreeJson {
     param(
-        [Parameter(Mandatory = $true)][object[]]$Entries,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Entries,
         [Parameter(Mandatory = $true)][string]$RootName,
         [int]$Depth = 10
     )
 
     $tree = ConvertTo-TreeNodeObject -Entries $Entries -RootName $RootName
-    return ($tree | ConvertTo-Json -Depth $Depth)
+    return ($tree | ConvertTo-Json -Depth $Depth -WarningAction Stop)
 }
 
 function ConvertTo-TreeYamlScalar {
@@ -877,14 +883,13 @@ function ConvertTo-TreeYamlScalar {
     }
 
     $text = [string]$Value
-    if ($text -eq '') { return "''" }
-    if ($text -match '^[A-Za-z0-9_\-\.\/]+$') { return $text }
-    return ('"' + ($text -replace '"', '\"') + '"')
+    # JSON strings are valid YAML double-quoted scalars and preserve all escapes.
+    return (ConvertTo-Json -InputObject $text -Compress)
 }
 
 function ConvertTo-TreeYaml {
     param(
-        [Parameter(Mandatory = $true)][object[]]$Entries,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Entries,
         [Parameter(Mandatory = $true)][string]$RootName
     )
 
@@ -900,6 +905,11 @@ function ConvertTo-TreeYaml {
         $pad = [string]::new(' ', $Indent)
         [void]$sb.AppendLine($pad + 'name: ' + (ConvertTo-TreeYamlScalar $Node.name))
         [void]$sb.AppendLine($pad + 'type: ' + (ConvertTo-TreeYamlScalar $Node.type))
+        foreach ($field in @('Content','ContentDirective','Template')) {
+            if ($Node.PSObject.Properties.Name -contains $field) {
+                [void]$sb.AppendLine($pad + $field + ': ' + (ConvertTo-TreeYamlScalar $Node.$field))
+            }
+        }
         if ($Node.type -eq 'dir') {
             [void]$sb.AppendLine($pad + 'children:')
             foreach ($child in @($Node.children)) {
@@ -918,8 +928,8 @@ function Get-ExcludeList {
     $config = Get-TreeConfig -RootPath $RootPath -IgnoreFile $IgnoreFile -ExtraExclude $ExtraExclude
     $excludeFolders = @($config.ExcludeFolders)
     $gitIgnorePath = Join-Path $RootPath '.gitignore'
-    if (Test-Path $gitIgnorePath) {
-        $ignoreLines = Get-Content $gitIgnorePath | Where-Object { $_ -and -not $_.StartsWith('#') }
+    if (Test-Path -LiteralPath $gitIgnorePath) {
+        $ignoreLines = Get-Content -LiteralPath $gitIgnorePath | Where-Object { $_ -and -not $_.StartsWith('#') }
         foreach ($line in $ignoreLines) {
             $clean = $line.Trim().TrimEnd('/').TrimStart('/')
             if ($clean -and $clean -notmatch '[*!]' -and $clean -notmatch '/' -and $clean -notin $excludeFolders) {
@@ -930,61 +940,29 @@ function Get-ExcludeList {
     return $excludeFolders
 }
 
+. (Join-Path $PSScriptRoot '_scan.ps1')
 function Get-LimitedItems {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][int]$CurrentDepth,
-        [Parameter(Mandatory = $true)][int]$MaxDepth,
-        [Parameter(Mandatory = $true)][string[]]$ExcludeFolders
-    )
-
-    $items = Get-ChildItem -LiteralPath $Path -ErrorAction SilentlyContinue
-    $result = [System.Collections.Generic.List[object]]::new()
-
-    foreach ($item in $items) {
-        $skip = $false
-        foreach ($ex in $ExcludeFolders) {
-            if ($item.Name -eq $ex) { $skip = $true; break }
-        }
-        if ($skip) { continue }
-
-        [void]$result.Add($item)
-
-        if ($item.PSIsContainer) {
-            if ($MaxDepth -eq 0 -or $CurrentDepth + 1 -lt $MaxDepth) {
-                $nested = Get-LimitedItems -Path $item.FullName `
-                    -CurrentDepth ($CurrentDepth + 1) `
-                    -MaxDepth $MaxDepth `
-                    -ExcludeFolders $ExcludeFolders
-                foreach ($n in $nested) { [void]$result.Add($n) }
-            }
-        }
-    }
-
-    return $result
+    param([string]$Path,[int]$CurrentDepth,[int]$MaxDepth,[AllowEmptyCollection()][string[]]$ExcludeFolders)
+    if($MaxDepth -gt 0 -and $CurrentDepth -ge $MaxDepth){return @()}
+    $remaining=if($MaxDepth -eq 0){0}else{[Math]::Max(0,$MaxDepth-$CurrentDepth)}
+    $scan=Get-TreeScan $Path $remaining $ExcludeFolders
+    Assert-CompleteScan $scan
+    return $scan.Items
 }
-
 function Write-Color {
     param(
         [Parameter(Mandatory = $true)][string]$Message,
         [string]$Color = 'White',
         [switch]$NoNewline
     )
-    $ansiMap = @{
-        'Red'     = "`e[31m"
-        'Green'   = "`e[32m"
-        'Yellow'  = "`e[33m"
-        'Blue'    = "`e[34m"
-        'Magenta' = "`e[35m"
-        'Cyan'    = "`e[36m"
-        'White'   = "`e[37m"
-        'Gray'    = "`e[90m"
-        'Bold'    = "`e[1m"
-        'Reset'   = "`e[0m"
-    }
-    $ansi  = if ($ansiMap.ContainsKey($Color)) { $ansiMap[$Color] } else { '' }
-    $reset = $ansiMap['Reset']
-    $line  = $ansi + $Message + $reset
-    if ($NoNewline) { Write-Host $line -NoNewline } else { Write-Host $line }
+    # Write-Host colors work in Windows PowerShell 5.1 and do not emit raw ANSI
+    # sequences to redirected output or terminals without VT support.
+    $arguments=@{Object=$Message;NoNewline=$NoNewline}
+    if($Color -in [Enum]::GetNames([ConsoleColor])){$arguments.ForegroundColor=$Color}
+    Write-Host @arguments
 }
 #endregion
+
+. (Join-Path $PSScriptRoot '_merge.ps1')
+
+. (Join-Path $PSScriptRoot '_templates.ps1')

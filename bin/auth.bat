@@ -1,4 +1,17 @@
 @echo off
+setlocal EnableExtensions DisableDelayedExpansion
+if defined PTU_LEGACY goto legacy_entry
+if not "%~1"=="" goto cli_entry
+if /i "%TREE_CI%"=="1" goto cli_entry
+if /i "%TREE_CI%"=="true" goto cli_entry
+if /i "%TREE_CI%"=="yes" goto cli_entry
+goto legacy_entry
+:cli_entry
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\cli.ps1" auth %*
+exit /b %errorlevel%
+:legacy_entry
+endlocal
+@echo off
 setlocal EnableExtensions
 cd /d "%~dp0"
 
@@ -9,6 +22,7 @@ if not exist "%AUTH_PS1%" (
 )
 
 set "CI_MODE=0"
+set "AUTH_RESULT=2"
 if /i "%~1"=="--ci" (
     set "CI_MODE=1"
     shift
@@ -34,6 +48,7 @@ echo [0] Exit
 set /p choice="Enter choice (0-2): "
 if "%choice%"=="1" goto do_store
 if "%choice%"=="2" goto do_clear
+set "AUTH_RESULT=0"
 goto auth_exit
 
 :do_store
@@ -58,10 +73,12 @@ if "%CI_MODE%"=="1" (
         echo [ERROR] CI mode requires the secret as an argument.
         exit /b 2
     )
-    powershell -NoProfile -ExecutionPolicy Bypass -File "%AUTH_PS1%" -Action store -Target "%TARGET%" -Username "%USERNAME%" -Secret "%SECRET%" -Ci
+    echo [ERROR] Use the public CLI with --secret-env or --secret-stdin for CI storage.
+    exit /b 2
 ) else (
     powershell -NoProfile -ExecutionPolicy Bypass -File "%AUTH_PS1%" -Action store -Target "%TARGET%" -Username "%USERNAME%"
 )
+set "AUTH_RESULT=%errorlevel%"
 goto auth_exit
 
 :do_clear
@@ -78,8 +95,9 @@ if "%TARGET%"=="" (
     goto auth_exit
 )
 powershell -NoProfile -ExecutionPolicy Bypass -File "%AUTH_PS1%" -Action clear -Target "%TARGET%"
+set "AUTH_RESULT=%errorlevel%"
 
 :auth_exit
-if "%CI_MODE%"=="1" exit /b %errorlevel%
-endlocal
+if "%CI_MODE%"=="1" exit /b %AUTH_RESULT%
 pause
+endlocal & exit /b %AUTH_RESULT%

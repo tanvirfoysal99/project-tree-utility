@@ -1,26 +1,28 @@
 param(
-<<<<<<< HEAD
     [string]$ArgsFile = '',
     [string]$RootPath = '',
     [string]$OutputFile = '',
     [string]$OutputFormat = '',
-=======
-    [Parameter(Mandatory = $true)][string]$RootPath,
-    [Parameter(Mandatory = $true)][string]$OutputFile,
-    [Parameter(Mandatory = $true)][ValidateSet('importable', 'md', 'txt', 'json', 'yaml')][string]$OutputFormat,
->>>>>>> 46d4b9c9fbbd365c47daec7faeed0746fc47c166
     [int]$MaxDepth = 5,
     [ValidateSet('all', 'folders', 'files')][string]$ShowMode = 'all',
     [string]$ExcludeList = '',
     [string]$IgnoreFile = '',
     [string]$ExtraExclude = '',
-    [switch]$Ci
+    [switch]$Ci,
+    [switch]$FromEnvironment
 )
 
-<<<<<<< HEAD
-# When called from export.bat, paths are passed via a temp file to avoid
-# CMD quoting issues with spaces and special characters in directory names.
-if ($ArgsFile -and (Test-Path -LiteralPath $ArgsFile)) {
+$ErrorActionPreference = 'Stop'
+try {
+if ($FromEnvironment) {
+    $RootPath=$env:SCAN_DIR; $OutputFile=$env:OUT_FILE; $OutputFormat=$env:FORMAT_TYPE
+    if ($env:MAX_DEPTH) { $MaxDepth=[int]$env:MAX_DEPTH }
+    if ($env:SHOW_MODE) { $ShowMode=$env:SHOW_MODE }
+    $ExtraExclude=$env:extra_exclude; $IgnoreFile=$env:IGNORE_FILE
+}
+# Legacy ArgsFile input remains supported; wrappers now use environment data.
+if ($ArgsFile) {
+    if(-not (Test-Path -LiteralPath $ArgsFile -PathType Leaf)){throw 'Argument file not found.'}
     $lines = [System.IO.File]::ReadAllLines($ArgsFile)
     $RootPath     = if ($lines.Count -gt 0) { $lines[0].Trim() } else { '' }
     $OutputFile   = if ($lines.Count -gt 1) { $lines[1].Trim() } else { '' }
@@ -46,10 +48,6 @@ if ($OutputFormat -notin $validFormats) {
     Write-Host "[ERROR] OutputFormat must be one of: $($validFormats -join ', ')"
     exit 2
 }
-
-=======
->>>>>>> 46d4b9c9fbbd365c47daec7faeed0746fc47c166
-$ErrorActionPreference = 'Stop'
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $sharedPath = Join-Path $scriptRoot 'internal\_shared.ps1'
@@ -101,126 +99,87 @@ function Test-ExcludedPath {
 }
 
 function Get-TreeEntries {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$RootPath,
-        [Parameter(Mandatory = $true)][string[]]$ExcludeFolders,
-        [Parameter(Mandatory = $true)][int]$CurrentDepth,
-        [Parameter(Mandatory = $true)][int]$MaxDepth
-    )
-
-    $items = [System.Collections.Generic.List[object]]::new()
-    if ($MaxDepth -gt 0 -and $CurrentDepth -gt $MaxDepth) { return $items }
-
-    $children = Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue
-    foreach ($child in $children) {
-        if (Test-ExcludedPath -FullPath $child.FullName -ExcludeFolders $ExcludeFolders) {
-            continue
-        }
-
-        $rel = Get-RelativePath -BasePath $RootPath -FullPath $child.FullName
-        $entry = [pscustomobject]@{
-            Path  = $rel -replace '\\', '/'
-            Type  = if ($child.PSIsContainer) { 'tree' } else { 'blob' }
-            IsDir = [bool]$child.PSIsContainer
-        }
-        $items.Add($entry) | Out-Null
-
-        if ($child.PSIsContainer) {
-            $nested = Get-TreeEntries -Path $child.FullName -RootPath $RootPath -ExcludeFolders $ExcludeFolders -CurrentDepth ($CurrentDepth + 1) -MaxDepth $MaxDepth
-            foreach ($n in $nested) { $items.Add($n) | Out-Null }
-        }
+    param([string]$Path,[string]$RootPath,[AllowEmptyCollection()][string[]]$ExcludeFolders,[int]$CurrentDepth,[int]$MaxDepth)
+    $scan=Get-TreeScan $RootPath $MaxDepth $ExcludeFolders
+    Assert-CompleteScan $scan
+    foreach($item in $scan.Items){
+        [pscustomobject]@{Path=(Get-RelativePath $RootPath $item.FullName).Replace('\','/');Type=$(if($item.PSIsContainer){'tree'}else{'blob'});IsDir=[bool]$item.PSIsContainer}
     }
-
-    return $items
 }
-
 function Build-TextTree {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [string]$Prefix = '',
-        [Parameter(Mandatory = $true)][int]$CurrentDepth,
-        [Parameter(Mandatory = $true)][int]$MaxDepth,
-        [Parameter(Mandatory = $true)][string[]]$ExcludeFolders,
-        [Parameter(Mandatory = $true)][string]$Format,
-        [Parameter(Mandatory = $true)][string]$ShowMode,
-        [Parameter(Mandatory = $true)][System.Text.StringBuilder]$Sb
-    )
-
-    if ($MaxDepth -gt 0 -and $CurrentDepth -gt $MaxDepth) { return }
-
-    $items = Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue
-    $filtered = foreach ($child in $items) {
-        if (Test-ExcludedPath -FullPath $child.FullName -ExcludeFolders $ExcludeFolders) { continue }
-        $child
+    param([string]$Path,[string]$Prefix='',[int]$CurrentDepth,[int]$MaxDepth,[AllowEmptyCollection()][string[]]$ExcludeFolders,[string]$Format,[string]$ShowMode,[Text.StringBuilder]$Sb)
+    # Render the already-completed scan; do not race a second recursive scan.
+    $groups=@{}
+    foreach($item in $script:ExportScan.Items){
+        $parent=if($item.PSIsContainer){$item.Parent.FullName}else{$item.DirectoryName}
+        if(-not $groups.ContainsKey($parent)){$groups[$parent]=New-Object 'System.Collections.Generic.List[object]'}
+        $groups[$parent].Add($item)
     }
-
-    $dirs = @($filtered | Where-Object { $_.PSIsContainer })
-    $files = @($filtered | Where-Object { -not $_.PSIsContainer })
-    $all = switch ($ShowMode) {
-        'folders' { $dirs }
-        'files'   { $files }
-        default   { $dirs + $files }
-    }
-
-    for ($i = 0; $i -lt $all.Count; $i++) {
-        $item = $all[$i]
-        $isLast = ($i -eq $all.Count - 1)
-        $slash = if ($item.PSIsContainer) { '/' } else { '' }
-        $emoji = Get-Emoji -Item $item
-
-        if ($Format -eq 'importable') {
-            $dashes = '-' * $CurrentDepth
-            [void]$Sb.AppendLine($dashes + ' ' + $item.Name + $slash)
-        } else {
-            $conn = if ($isLast) { [char]0x2514 + [char]0x2500 + [char]0x2500 + ' ' } else { [char]0x251C + [char]0x2500 + [char]0x2500 + ' ' }
-            if ($Format -eq 'md') {
-                [void]$Sb.AppendLine($Prefix + $conn + $emoji + ' ``' + $item.Name + $slash + '``')
-            } else {
-                [void]$Sb.AppendLine($Prefix + $conn + $emoji + ' ' + $item.Name + $slash)
+    function Render-Children([string]$Parent,[string]$Pad,[int]$Depth) {
+        $children=@($groups[$Parent] | Sort-Object @{Expression={-not $_.PSIsContainer}},Name)
+        foreach($item in $children){
+            $visible=$ShowMode -eq 'all' -or ($ShowMode -eq 'folders' -and $item.PSIsContainer) -or ($ShowMode -eq 'files' -and -not $item.PSIsContainer)
+            $slash=if($item.PSIsContainer){'/'}else{''}
+            if($visible){
+                if($Format -eq 'importable'){
+                    # Files-only output uses complete relative paths so omitted directory
+                    # lines cannot change the hierarchy on re-import.
+                    if($ShowMode -eq 'files'){[void]$Sb.AppendLine('- '+(Get-RelativePath $script:ExportScan.Root $item.FullName).Replace('\','/'))}
+                    else{[void]$Sb.AppendLine(('-'*$Depth)+' '+$item.Name+$slash)}
+                }else{
+                    $connector=[string]$(if($item.FullName -eq $children[-1].FullName){[char]0x2514}else{[char]0x251c})+[char]0x2500+[char]0x2500+' '
+                    [void]$Sb.AppendLine($Pad+$connector+(Get-Emoji $item)+' '+$item.Name+$slash)
+                }
             }
-        }
-
-        if ($item.PSIsContainer) {
-            $newPrefix = if ($Format -eq 'importable') { '' } elseif ($isLast) { $Prefix + '    ' } else { $Prefix + ([char]0x2502 + '   ') }
-            Build-TextTree -Path $item.FullName -Prefix $newPrefix -CurrentDepth ($CurrentDepth + 1) -MaxDepth $MaxDepth -ExcludeFolders $ExcludeFolders -Format $Format -ShowMode $ShowMode -Sb $Sb
+            if($item.PSIsContainer){Render-Children $item.FullName ($Pad+'    ') ($Depth+1)}
         }
     }
+    Render-Children $script:ExportScan.Root $Prefix $CurrentDepth
 }
-
+if (-not (Test-Path -LiteralPath $RootPath -PathType Container)) { Write-Host '[ERROR] RootPath must be a directory.'; exit 2 }
 $root = (Resolve-Path -LiteralPath $RootPath).Path
 $rootName = Split-Path -Path $root -Leaf
 $exclude = @()
 $exclude += Get-ExcludedNames -Value $ExcludeList
 $exclude += Get-ExcludedNames -Value $ExtraExclude
 $configExcludes = Get-ExcludeList -RootPath $root -IgnoreFile $IgnoreFile -ExtraExclude ($exclude -join ',')
+$config=Get-TreeConfig -RootPath $root -IgnoreFile $IgnoreFile -ExtraExclude ($exclude -join ',')
+$explicit=@{}
+if($PSBoundParameters.ContainsKey('MaxDepth') -or ($FromEnvironment -and $env:MAX_DEPTH)){$explicit.MaxDepth=$MaxDepth}
+if($PSBoundParameters.ContainsKey('ShowMode') -or ($FromEnvironment -and $env:SHOW_MODE)){$explicit.ShowMode=$ShowMode}
+$resolvedOptions=Resolve-TreeOptions $config $explicit
+$MaxDepth=$resolvedOptions.MaxDepth;$ShowMode=$resolvedOptions.ShowMode
+$script:ExportScan=Get-TreeScan $root $MaxDepth $configExcludes
+Assert-CompleteScan $script:ExportScan
 
 $sb = [System.Text.StringBuilder]::new()
 $sep = [string]::new([char]0x2500, 45)
 $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 
 if ($OutputFormat -in @('json', 'yaml')) {
-    $entries = Get-TreeEntries -Path $root -RootPath $root -ExcludeFolders $configExcludes -CurrentDepth 1 -MaxDepth $MaxDepth
+    $entries=@($script:ExportScan.Items | ForEach-Object { [pscustomobject]@{Path=(Get-RelativePath $root $_.FullName).Replace('\','/');Type=$(if($_.PSIsContainer){'tree'}else{'blob'});IsDir=[bool]$_.PSIsContainer} })
+    if($ShowMode -eq 'folders'){$entries=@($entries|Where-Object IsDir)}
+    if($ShowMode -eq 'files'){$entries=@($entries|Where-Object {-not $_.IsDir});$entries=@($entries|ForEach-Object {$_|Add-Member -NotePropertyName Type -NotePropertyValue 'blob' -Force -PassThru})}
     if ($OutputFormat -eq 'json') {
-        $output = ConvertTo-TreeJson -Entries $entries -RootName $rootName -Depth 20
+        $output = ConvertTo-TreeJson -Entries $entries -RootName $rootName -Depth 100
     } else {
         $output = ConvertTo-TreeYaml -Entries $entries -RootName $rootName
     }
 } else {
-    $sb.AppendLine($sep) | Out-Null
-    $sb.AppendLine('  PROJECT SUMMARY') | Out-Null
-    $sb.AppendLine('  Generated : ' + $timestamp) | Out-Null
-    $sb.AppendLine('  Root      : ' + $rootName) | Out-Null
-    $sb.AppendLine('  Format    : ' + $OutputFormat) | Out-Null
-    $sb.AppendLine($sep) | Out-Null
-    $sb.AppendLine('') | Out-Null
+    if ($OutputFormat -ne 'importable') {
+        $sb.AppendLine($sep) | Out-Null
+        $sb.AppendLine('  PROJECT SUMMARY') | Out-Null
+        $sb.AppendLine('  Generated : ' + $timestamp) | Out-Null
+        $sb.AppendLine('  Root      : ' + $rootName) | Out-Null
+        $sb.AppendLine('  Format    : ' + $OutputFormat) | Out-Null
+        $sb.AppendLine($sep) | Out-Null
+        $sb.AppendLine('') | Out-Null
+    }
 
     if ($OutputFormat -eq 'md') {
         $sb.AppendLine('## ' + $rootName + '/') | Out-Null
         $sb.AppendLine('``````text') | Out-Null
-    } elseif ($OutputFormat -eq 'importable') {
-        $sb.AppendLine('- ' + $rootName + '/') | Out-Null
-    } else {
+    } elseif ($OutputFormat -ne 'importable') {
         $sb.AppendLine($rootName + '/') | Out-Null
     }
 
@@ -244,3 +203,5 @@ if (-not $Ci) {
 }
 
 exit 0
+
+} catch { Write-Host ('[ERROR] Export failed: '+$_.Exception.Message); exit 2 }

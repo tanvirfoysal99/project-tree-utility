@@ -1,4 +1,17 @@
 @echo off
+setlocal EnableExtensions DisableDelayedExpansion
+if defined PTU_LEGACY goto legacy_entry
+if not "%~1"=="" goto cli_entry
+if /i "%TREE_CI%"=="1" goto cli_entry
+if /i "%TREE_CI%"=="true" goto cli_entry
+if /i "%TREE_CI%"=="yes" goto cli_entry
+goto legacy_entry
+:cli_entry
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\cli.ps1" library %*
+exit /b %errorlevel%
+:legacy_entry
+endlocal
+@echo off
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
@@ -38,6 +51,7 @@ if not exist "%SHARED%" (
 ::   sub  = called by another bat, exit /b when done
 ::   menu = standalone interactive, loop back to menu
 set "ST_MODE=sub"
+set "ST_RESULT=0"
 
 if /i "%~1"=="SAVE"   goto sub_save
 if /i "%~1"=="LIST"   goto sub_list
@@ -67,27 +81,23 @@ echo.
 set /p SV_NAME="Enter a name for this library entry: "
 if "!SV_NAME!"=="" (
     echo [INFO] No name entered. Skipping save.
-    exit /b 0
+    exit /b !ST_RESULT!
 )
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    ". '%STORE_PS1:\=/%';" ^
-    "Add-TreeEntry -SourceFile '!SV_FILE:\=/!' -UserName '!SV_NAME!' -Format '!SV_FMT!' -Source '!SV_SRC!'" ^
-    "| Out-Null"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action StoreSave
+set "ST_RESULT=!errorlevel!"
 
-exit /b %errorlevel%
+exit /b !ST_RESULT!
 
 :: ============================================================
 :: SUBCOMMAND: LIST
 :: ============================================================
 :sub_list
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    ". '%STORE_PS1:\=/%';" ^
-    "Remove-MissingEntries;" ^
-    "Show-LibraryTable | Out-Null"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action StoreList
+set "ST_RESULT=!errorlevel!"
 echo.
 pause
-exit /b 0
+exit /b !ST_RESULT!
 
 :: ============================================================
 :: INTERACTIVE MODE
@@ -117,10 +127,8 @@ echo Invalid choice.
 goto interactive
 
 :menu_list
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    ". '%STORE_PS1:\=/%';" ^
-    "Remove-MissingEntries;" ^
-    "Show-LibraryTable | Out-Null"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action StoreList
+set "ST_RESULT=!errorlevel!"
 echo.
 pause
 goto interactive
@@ -136,8 +144,8 @@ echo ============================================
 echo   LIBRARY  -  Select a tree
 echo ============================================
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    ". '%STORE_PS1:\=/%'; Remove-MissingEntries; Show-LibraryTable | Out-Null"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action StoreList
+set "ST_RESULT=!errorlevel!"
 
 echo.
 set "OPEN_NUM="
@@ -149,18 +157,10 @@ set "OPEN_FILE="
 set "OPEN_FMT="
 set "OPEN_ORPHAN=False"
 
-for /f "usebackq delims=" %%L in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    ". '%STORE_PS1:\=/%';" ^
-    "$sel = Resolve-TreeSelection -Number !OPEN_NUM!;" ^
-    "if ($null -eq $sel) { Write-Output 'NOTFOUND' } else {" ^
-    "    Write-Output ('NAME=' + $sel.Name);" ^
-    "    Write-Output ('FILE=' + $sel.FilePath);" ^
-    "    Write-Output ('FMT='  + $sel.Format);" ^
-    "    Write-Output ('ORPHAN=' + $sel.IsOrphan)" ^
-    "}"`) do (
+for /f "usebackq delims=" %%L in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action StoreSelect`) do (
     set "OPEN_LINE=%%L"
     if "!OPEN_LINE!"=="NOTFOUND" (
-        echo [ERROR] Invalid selection.
+        set "ST_RESULT=1" & echo [ERROR] Invalid selection.
         goto action_open_end
     )
     if "!OPEN_LINE:~0,5!"=="NAME=" set "OPEN_NAME=!OPEN_LINE:~5!"
@@ -169,8 +169,8 @@ for /f "usebackq delims=" %%L in (`powershell -NoProfile -ExecutionPolicy Bypass
     if "!OPEN_LINE:~0,7!"=="ORPHAN=" set "OPEN_ORPHAN=!OPEN_LINE:~7!"
 )
 
-if "!OPEN_NAME!"=="" ( echo [ERROR] Could not resolve selection. & goto action_open_end )
-if not exist "!OPEN_FILE!" ( echo [ERROR] File missing: !OPEN_FILE! & goto action_open_end )
+if "!OPEN_NAME!"=="" ( set "ST_RESULT=1" & echo [ERROR] Could not resolve selection. & goto action_open_end )
+if not exist "!OPEN_FILE!" ( set "ST_RESULT=1" & echo [ERROR] File missing: !OPEN_FILE! & goto action_open_end )
 
 echo.
 echo ============================================
@@ -238,10 +238,8 @@ if "!OPEN_ACT!"=="7" (
         set "REG_NAME="
         set /p REG_NAME="Enter a name (or press Enter to use '!OPEN_NAME!'): "
         if "!REG_NAME!"=="" set "REG_NAME=!OPEN_NAME!"
-        powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-            ". '%STORE_PS1:\=/%';" ^
-            "$o = [ordered]@{ Name='!OPEN_NAME!'; FilePath='!OPEN_FILE:\=/!'; Format='!OPEN_FMT!'; EntryCount='?' };" ^
-            "Register-OrphanFile -Orphan $o -UserName '!REG_NAME!'"
+        powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action StoreRegister
+set "ST_RESULT=!errorlevel!"
     ) else (
         echo [INFO] This entry is already registered.
     )
@@ -254,7 +252,7 @@ echo Invalid choice.
 echo.
 pause
 if "!ST_MODE!"=="menu" goto interactive
-exit /b 0
+exit /b !ST_RESULT!
 
 :: ── OPEN sub-action: merge with a second tree ────────────────
 :action_open_merge
@@ -269,8 +267,8 @@ echo ============================================
 echo   File A (base): !OM_NAME_A!
 echo.
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    ". '%STORE_PS1:\=/%'; Show-LibraryTable | Out-Null"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action StoreShow
+set "ST_RESULT=!errorlevel!"
 
 echo.
 set "OM_NUM="
@@ -284,19 +282,12 @@ if "!OM_NUM!"=="" (
     echo !OM_FILE_B!| findstr /C:"\" >nul
     if errorlevel 1 set "OM_FILE_B=%~dp0!OM_FILE_B!"
     if not exist "!OM_FILE_B!" ( echo [ERROR] File not found. & goto action_open_end )
-    for /f "usebackq delims=" %%D in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-        ". '%SHARED:\=/%'; Write-Output (Get-StructureFormat -FilePath '!OM_FILE_B:\=/!')"`) do set "OM_FMT_B=%%D"
+    for /f "usebackq delims=" %%D in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action DetectLibraryMerge`) do set "OM_FMT_B=%%D"
     if "!OM_FMT_B!"=="unknown" set "OM_FMT_B=dash"
 ) else (
-    for /f "usebackq delims=" %%L in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-        ". '%STORE_PS1:\=/%';" ^
-        "$sel = Resolve-TreeSelection -Number !OM_NUM!;" ^
-        "if ($null -eq $sel) { Write-Output 'NOTFOUND' } else {" ^
-        "    Write-Output ('FILE=' + $sel.FilePath);" ^
-        "    Write-Output ('FMT='  + $sel.Format)" ^
-        "}"`) do (
+    for /f "usebackq delims=" %%L in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action StoreSelectMerge`) do (
         set "OM_LINE=%%L"
-        if "!OM_LINE!"=="NOTFOUND" ( echo [ERROR] Invalid selection. & goto action_open_end )
+        if "!OM_LINE!"=="NOTFOUND" ( set "ST_RESULT=1" & echo [ERROR] Invalid selection. & goto action_open_end )
         if "!OM_LINE:~0,5!"=="FILE=" set "OM_FILE_B=!OM_LINE:~5!"
         if "!OM_LINE:~0,4!"=="FMT="  set "OM_FMT_B=!OM_LINE:~4!"
     )
@@ -324,8 +315,8 @@ echo ============================================
 echo   RENAME  -  Select a tree
 echo ============================================
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    ". '%STORE_PS1:\=/%'; Remove-MissingEntries; Show-LibraryTable | Out-Null"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action StoreList
+set "ST_RESULT=!errorlevel!"
 
 echo.
 set "RN_NUM="
@@ -333,16 +324,13 @@ set /p RN_NUM="Select a tree to rename (number, or press Enter to cancel): "
 if "!RN_NUM!"=="" goto action_rename_end
 
 set "RN_OLD="
-for /f "usebackq delims=" %%L in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    ". '%STORE_PS1:\=/%';" ^
-    "$sel = Resolve-TreeSelection -Number !RN_NUM!;" ^
-    "if ($null -eq $sel) { Write-Output 'NOTFOUND' } else { Write-Output ('NAME=' + $sel.Name) }"`) do (
+for /f "usebackq delims=" %%L in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action StoreSelectRename`) do (
     set "RN_LINE=%%L"
-    if "!RN_LINE!"=="NOTFOUND" ( echo [ERROR] Invalid selection. & goto action_rename_end )
+    if "!RN_LINE!"=="NOTFOUND" ( set "ST_RESULT=1" & echo [ERROR] Invalid selection. & goto action_rename_end )
     if "!RN_LINE:~0,5!"=="NAME=" set "RN_OLD=!RN_LINE:~5!"
 )
 
-if "!RN_OLD!"=="" ( echo [ERROR] Could not resolve selection. & goto action_rename_end )
+if "!RN_OLD!"=="" ( set "ST_RESULT=1" & echo [ERROR] Could not resolve selection. & goto action_rename_end )
 
 echo.
 echo   Current name: !RN_OLD!
@@ -350,15 +338,14 @@ set "RN_NEW="
 set /p RN_NEW="New name (or press Enter to cancel): "
 if "!RN_NEW!"=="" ( echo [INFO] Cancelled. & goto action_rename_end )
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    ". '%STORE_PS1:\=/%';" ^
-    "Rename-TreeEntry -NameOrId '!RN_OLD!' -NewName '!RN_NEW!'"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action StoreRename
+set "ST_RESULT=!errorlevel!"
 
 :action_rename_end
 echo.
 pause
 if "!ST_MODE!"=="menu" goto interactive
-exit /b 0
+exit /b !ST_RESULT!
 
 :: ============================================================
 :: ACTION: DELETE
@@ -369,8 +356,8 @@ echo ============================================
 echo   DELETE  -  Select a tree
 echo ============================================
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    ". '%STORE_PS1:\=/%'; Remove-MissingEntries; Show-LibraryTable | Out-Null"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action StoreList
+set "ST_RESULT=!errorlevel!"
 
 echo.
 set "DL_NUM="
@@ -378,31 +365,27 @@ set /p DL_NUM="Select a tree to delete (number, or press Enter to cancel): "
 if "!DL_NUM!"=="" goto action_delete_end
 
 set "DL_NAME="
-for /f "usebackq delims=" %%L in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    ". '%STORE_PS1:\=/%';" ^
-    "$sel = Resolve-TreeSelection -Number !DL_NUM!;" ^
-    "if ($null -eq $sel) { Write-Output 'NOTFOUND' } else { Write-Output ('NAME=' + $sel.Name) }"`) do (
+for /f "usebackq delims=" %%L in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action StoreSelectDelete`) do (
     set "DL_LINE=%%L"
-    if "!DL_LINE!"=="NOTFOUND" ( echo [ERROR] Invalid selection. & goto action_delete_end )
+    if "!DL_LINE!"=="NOTFOUND" ( set "ST_RESULT=1" & echo [ERROR] Invalid selection. & goto action_delete_end )
     if "!DL_LINE:~0,5!"=="NAME=" set "DL_NAME=!DL_LINE:~5!"
 )
 
-if "!DL_NAME!"=="" ( echo [ERROR] Could not resolve selection. & goto action_delete_end )
+if "!DL_NAME!"=="" ( set "ST_RESULT=1" & echo [ERROR] Could not resolve selection. & goto action_delete_end )
 
 echo.
 echo   About to delete: !DL_NAME!
 set /p DL_CONFIRM="Are you sure? This cannot be undone. (y/N): "
 if /i not "!DL_CONFIRM!"=="y" ( echo [INFO] Cancelled. & goto action_delete_end )
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    ". '%STORE_PS1:\=/%';" ^
-    "Remove-TreeEntry -NameOrId '!DL_NAME!'"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action StoreDelete
+set "ST_RESULT=!errorlevel!"
 
 :action_delete_end
 echo.
 pause
 if "!ST_MODE!"=="menu" goto interactive
-exit /b 0
+exit /b !ST_RESULT!
 
 :: ============================================================
 :: ACTION: PURGE
@@ -422,19 +405,14 @@ if not "!PG_C1!"=="YES" ( echo [INFO] Cancelled. & goto action_purge_end )
 set /p PG_C2="Type YES again to confirm: "
 if not "!PG_C2!"=="YES" ( echo [INFO] Cancelled. & goto action_purge_end )
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    ". '%STORE_PS1:\=/%';" ^
-    "$dir = '%~dp0..\data\store_trees';" ^
-    "if (Test-Path $dir) { Remove-Item -Path $dir -Recurse -Force };" ^
-    "$json = '%~dp0..\data\store_data.json';" ^
-    "if (Test-Path $json) { Remove-Item -Path $json -Force };" ^
-    "Write-Host '[OK] Library purged.'"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action StorePurge
+set "ST_RESULT=!errorlevel!"
 
 :action_purge_end
 echo.
 pause
 if "!ST_MODE!"=="menu" goto interactive
-exit /b 0
+exit /b !ST_RESULT!
 
 :st_exit
 endlocal

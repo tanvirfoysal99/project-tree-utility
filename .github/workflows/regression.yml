@@ -1,0 +1,28 @@
+name: Windows PowerShell regression checks
+on: [push, pull_request]
+jobs:
+  regression:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run regression suites on Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          Get-ChildItem tests/regression-*.ps1 | Sort-Object Name | ForEach-Object {
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $_.FullName
+            if ($LASTEXITCODE -ne 0) { throw "Regression suite failed: $($_.Name)" }
+          }
+  template-builds:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install and build disposable templates without deployment
+        shell: powershell
+        run: |
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tests/template-builds.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Template integration checks failed.' }

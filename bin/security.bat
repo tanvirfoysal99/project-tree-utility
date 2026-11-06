@@ -1,4 +1,17 @@
 @echo off
+setlocal EnableExtensions DisableDelayedExpansion
+if defined PTU_LEGACY goto legacy_entry
+if not "%~1"=="" goto cli_entry
+if /i "%TREE_CI%"=="1" goto cli_entry
+if /i "%TREE_CI%"=="true" goto cli_entry
+if /i "%TREE_CI%"=="yes" goto cli_entry
+goto legacy_entry
+:cli_entry
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\cli.ps1" security %*
+exit /b %errorlevel%
+:legacy_entry
+endlocal
+@echo off
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
@@ -54,12 +67,9 @@ if not exist "!SEC_FILE!" (
     exit /b 1
 )
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    ". '%SHARED:\=/%';" ^
-    "$ok = Confirm-StructureFormat -FilePath '!SEC_FILE:\=/!' -Format '!SEC_FMT!';" ^
-    "if ($ok) { exit 0 } else { exit 1 }"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action ValidateFile
 
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo [SECURITY] Structure file failed format validation ^(%SEC_FMT%^).
     exit /b 1
 )
@@ -76,12 +86,9 @@ exit /b 0
 set "SEC_CAND=%~2"
 set "SEC_BASE=%~3"
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    ". '%SHARED:\=/%';" ^
-    "$ok = Test-SafePath -CandidatePath '!SEC_CAND:\=/!' -AllowedBase '!SEC_BASE:\=/!';" ^
-    "if ($ok) { exit 0 } else { exit 1 }"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action ValidatePath
 
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo [SECURITY] Path traversal detected: !SEC_CAND!
     echo            Write refused - path is outside allowed base.
     exit /b 1
@@ -98,16 +105,9 @@ exit /b 0
 set "SEC_FILE=%~2"
 set "SEC_FMT=%~3"
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    ". '%SHARED:\=/%';" ^
-    "$entries = Read-StructureFile -FilePath '!SEC_FILE:\=/!' -Format '!SEC_FMT!';" ^
-    "$bad = $entries | Where-Object { Test-DangerousName -Name $_.Name.TrimEnd('/') };" ^
-    "if ($bad) {" ^
-    "    $bad | ForEach-Object { Write-Host ('[SECURITY] Dangerous name: ' + $_.Name) };" ^
-    "    exit 1" ^
-    "} else { exit 0 }"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action ValidateNames
 
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo [SECURITY] Structure file contains dangerous entry names. Aborting.
     exit /b 1
 )
@@ -126,32 +126,15 @@ set "SEC_FMT=%~3"
 set "SEC_BASE=%~4"
 
 call "%~f0" VALIDATE_FILE  "!SEC_FILE!" "!SEC_FMT!"
-if %errorlevel% neq 0 exit /b 1
+if errorlevel 1 exit /b 1
 
 call "%~f0" VALIDATE_NAMES "!SEC_FILE!" "!SEC_FMT!"
-if %errorlevel% neq 0 exit /b 1
+if errorlevel 1 exit /b 1
 
 :: Path-level check: verify every resolved path stays inside base
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    ". '%SHARED:\=/%';" ^
-    "$entries = Read-StructureFile -FilePath '!SEC_FILE:\=/!' -Format '!SEC_FMT!';" ^
-    "$base    = '!SEC_BASE!';" ^
-    "$stack   = @{};" ^
-    "$failed  = $false;" ^
-    "for ($i = 0; $i -lt $entries.Count; $i++) {" ^
-    "    $e = $entries[$i];" ^
-    "    $parent = if ($e.Depth -eq 1) { $base } else { $stack[$e.Depth - 1] };" ^
-    "    if (-not $parent) { $parent = $base };" ^
-    "    $full = Join-Path $parent $e.Name.TrimEnd('/');" ^
-    "    $stack[$e.Depth] = $full;" ^
-    "    if (-not (Test-SafePath -CandidatePath $full -AllowedBase $base)) {" ^
-    "        Write-Host ('[SECURITY] Unsafe path: ' + $full);" ^
-    "        $failed = $true" ^
-    "    }" ^
-    "};" ^
-    "if ($failed) { exit 1 } else { exit 0 }"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action ValidateEntries
 
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo [SECURITY] One or more paths would write outside the target base. Aborting.
     exit /b 1
 )

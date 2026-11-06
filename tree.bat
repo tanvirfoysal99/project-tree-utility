@@ -1,6 +1,6 @@
 @echo off
-setlocal enabledelayedexpansion
-cd /d "%~dp0"
+setlocal DisableDelayedExpansion
+rem Keep the caller directory for relative CLI paths.
 
 :: ============================================================
 :: tree.bat
@@ -22,26 +22,16 @@ set "BIN_DIR=%PROJECT_ROOT%bin\"
 set "SRC_DIR=%PROJECT_ROOT%src\"
 set "DATA_DIR=%PROJECT_ROOT%data\"
 
-set "CI_MODE=0"
-if /i "%~1"=="--ci" (
-    set "CI_MODE=1"
-    set "TREE_CI=1"
-    shift
-)
-
-:: Direct subcommand passthrough
-if /i "%~1"=="import"   ( call "%BIN_DIR%import.bat"   %2 %3 %4 %5 %6 %7 %8 %9 & goto done )
-if /i "%~1"=="export"   ( call "%BIN_DIR%export.bat"   %2 %3 %4 %5 %6 %7 %8 %9 & goto done )
-if /i "%~1"=="merge"    ( call "%BIN_DIR%merge.bat"    %2 %3 %4 %5 %6 %7 %8 %9 & goto done )
-if /i "%~1"=="scaffold" ( call "%BIN_DIR%scaffold.bat" %2 %3 %4 %5 %6 %7 %8 %9 & goto done )
-if /i "%~1"=="verify"   ( call "%BIN_DIR%verify.bat"   %2 %3 %4 %5 %6 %7 %8 %9 & goto done )
-if /i "%~1"=="security" ( call "%BIN_DIR%security.bat" %2 %3 %4 %5 %6 %7 %8 %9 & goto done )
-if /i "%~1"=="gittree"  ( call "%BIN_DIR%git_tree.bat" %2 %3 %4 %5 %6 %7 %8 %9 & goto done )
-if /i "%~1"=="auth"     ( call "%BIN_DIR%auth.bat"     %2 %3 %4 %5 %6 %7 %8 %9 & goto done )
-if /i "%~1"=="library"  ( call "%BIN_DIR%store.bat"    %2 %3 %4 %5 %6 %7 %8 %9 & goto done )
-if /i "%~1"=="watch"    ( call "%BIN_DIR%watch.bat"    %2 %3 %4 %5 %6 %7 %8 %9 & goto done )
-if /i "%~1"=="version"  ( call "%BIN_DIR%version.bat"  %2 %3 %4 %5 %6 %7 %8 %9 & goto done )
-
+if not "%~1"=="" goto cli_entry
+if /i "%TREE_CI%"=="1" goto cli_entry
+if /i "%TREE_CI%"=="true" goto cli_entry
+if /i "%TREE_CI%"=="yes" goto cli_entry
+goto check_files
+:cli_entry
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0src\cli.ps1" %*
+exit /b %errorlevel%
+:check_files
+setlocal EnableDelayedExpansion
 :: ?????? Check all toolkit files are present ???????????????????????????????????????????????????????????????
 set "MISSING="
 if not exist "%SRC_DIR%internal\_shared.ps1"           set "MISSING=!MISSING! _shared.ps1"

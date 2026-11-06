@@ -1,4 +1,17 @@
 @echo off
+setlocal EnableExtensions DisableDelayedExpansion
+if defined PTU_LEGACY goto legacy_entry
+if not "%~1"=="" goto cli_entry
+if /i "%TREE_CI%"=="1" goto cli_entry
+if /i "%TREE_CI%"=="true" goto cli_entry
+if /i "%TREE_CI%"=="yes" goto cli_entry
+goto legacy_entry
+:cli_entry
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\cli.ps1" gittree %*
+exit /b %errorlevel%
+:legacy_entry
+endlocal
+@echo off
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
@@ -173,27 +186,8 @@ call :run_git_tree
 exit /b %errorlevel%
 
 :run_git_tree
-<<<<<<< HEAD
-set "GTU_ARGS=%TEMP%\ptu_gittree_args_%RANDOM%.txt"
-(
-    echo !PROVIDER!
-    echo !REPO_URL!
-    echo !BRANCH!
-    echo !OUT_FILE!
-    echo !FORMAT_TYPE!
-    echo !SUBFOLDER!
-    echo !MAX_DEPTH!
-    echo !EXCLUDE_LIST!
-    echo !GITLAB_BASE!
-) > "!GTU_ARGS!"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%GT_PS1%" -ArgsFile "!GTU_ARGS!"
-set "_ec=%errorlevel%"
-del /f /q "!GTU_ARGS!" 2>nul
-exit /b %_ec%
-=======
-powershell -NoProfile -ExecutionPolicy Bypass -File "%GT_PS1%" -Provider "%PROVIDER%" -RepoUrl "%REPO_URL%" -Branch "%BRANCH%" -OutputFile "%OUT_FILE%" -OutputFormat "%FORMAT_TYPE%" -SubFolder "%SUBFOLDER%" -MaxDepth %MAX_DEPTH% -ExcludeList "%EXCLUDE_LIST%" -GitLabBaseUrl "%GITLAB_BASE%" -Ci
+powershell -NoProfile -ExecutionPolicy Bypass -File "%GT_PS1%" -FromEnvironment
 exit /b %errorlevel%
->>>>>>> 46d4b9c9fbbd365c47daec7faeed0746fc47c166
 
 :gt_exit
 if "%CI_MODE%"=="0" pause

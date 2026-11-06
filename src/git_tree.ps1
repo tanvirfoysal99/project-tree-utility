@@ -48,7 +48,6 @@
 #>
 
 param(
-<<<<<<< HEAD
     [string]$ArgsFile      = '',
     [string]$Provider      = '',
     [string]$RepoUrl       = '',
@@ -58,24 +57,22 @@ param(
     [string]$SubFolder     = '',
     [int]$MaxDepth         = 0,
     [string]$ExcludeList   = 'node_modules,.git,dist,build,.next,.wrangler',
-=======
-    [Parameter(Mandatory=$true)][ValidateSet('github','gitlab')][string]$Provider,
-    [Parameter(Mandatory=$true)][string]$RepoUrl,
-    [Parameter(Mandatory=$true)][string]$Branch,
-    [Parameter(Mandatory=$true)][string]$OutputFile,
-    [Parameter(Mandatory=$true)][ValidateSet('importable','md','txt','json','yaml')][string]$OutputFormat,
-    [string]$SubFolder   = '',
-    [int]$MaxDepth       = 0,
-    [string]$ExcludeList = 'node_modules,.git,dist,build,.next,.wrangler',
->>>>>>> 46d4b9c9fbbd365c47daec7faeed0746fc47c166
     [string]$GitLabBaseUrl = 'https://gitlab.com',
-    [switch]$Ci
+    [switch]$Ci,
+    [switch]$FromEnvironment
 )
+$ErrorActionPreference='Stop'
+try {
+if($FromEnvironment){
+    $Provider=$env:PROVIDER;$RepoUrl=$env:REPO_URL;$Branch=$env:BRANCH;$OutputFile=$env:OUT_FILE;$OutputFormat=$env:FORMAT_TYPE
+    $SubFolder=$env:SUBFOLDER;if($env:MAX_DEPTH){$MaxDepth=[int]$env:MAX_DEPTH};$ExcludeList=$env:EXCLUDE_LIST;$GitLabBaseUrl=$env:GITLAB_BASE
+}
+if ($env:TREE_CI -match '^(?i:1|true|yes)$') { $Ci=$true }
+if ($Ci) { $env:GCM_INTERACTIVE='Never'; $env:GIT_TERMINAL_PROMPT='0' }
 
-<<<<<<< HEAD
-# When called from git_tree.bat, all args are passed via a temp file to avoid
-# CMD quoting issues with URLs, paths, and special characters.
-if ($ArgsFile -and (Test-Path -LiteralPath $ArgsFile)) {
+# Legacy ArgsFile input remains supported; wrappers now use environment data.
+if ($ArgsFile) {
+    if(-not (Test-Path -LiteralPath $ArgsFile -PathType Leaf)){throw 'Argument file not found.'}
     $lines         = [System.IO.File]::ReadAllLines($ArgsFile)
     $Provider      = if ($lines.Count -gt 0) { $lines[0].Trim() } else { '' }
     $RepoUrl       = if ($lines.Count -gt 1) { $lines[1].Trim() } else { '' }
@@ -92,14 +89,12 @@ if ($ArgsFile -and (Test-Path -LiteralPath $ArgsFile)) {
 # Validate required fields
 $validProviders = @('github','gitlab')
 $validFormats   = @('importable','md','txt','json','yaml')
-if ($Provider -notin $validProviders) { Write-Host "[ERROR] Provider must be 'github' or 'gitlab'."; exit 1 }
-if (-not $RepoUrl)     { Write-Host '[ERROR] RepoUrl is required.';    exit 1 }
-if (-not $Branch)      { Write-Host '[ERROR] Branch is required.';     exit 1 }
-if (-not $OutputFile)  { Write-Host '[ERROR] OutputFile is required.'; exit 1 }
-if ($OutputFormat -notin $validFormats) { $OutputFormat = 'txt' }
+if ($Provider -notin $validProviders) { Write-Host "[ERROR] Provider must be 'github' or 'gitlab'."; exit 2 }
+if (-not $RepoUrl)     { Write-Host '[ERROR] RepoUrl is required.';    exit 2 }
+if (-not $Branch)      { Write-Host '[ERROR] Branch is required.';     exit 2 }
+if (-not $OutputFile)  { Write-Host '[ERROR] OutputFile is required.'; exit 2 }
+if ($OutputFormat -notin $validFormats) { Write-Host '[ERROR] Unsupported output format.'; exit 2 }
 
-=======
->>>>>>> 46d4b9c9fbbd365c47daec7faeed0746fc47c166
 $ErrorActionPreference = 'Stop'
 
 # ─────────────────────────────────────────────────────────────
@@ -140,7 +135,7 @@ function ConvertTo-PlainText {
 function Get-RepoHost {
     param([Parameter(Mandatory = $true)][string]$Url)
     try {
-        return ([System.Uri]$Url).Host.ToLowerInvariant()
+        return ([System.Uri]$Url).Authority.ToLowerInvariant()
     } catch {
         return ''
     }
@@ -156,94 +151,24 @@ function Get-RepoPath {
 }
 
 function Get-StoredPat {
-    param(
-        [Parameter(Mandatory = $true)][string]$RepoHost,
-        [string]$Path = ''
-    )
-
-    $credentialCommands = @(
-        (Get-Command 'git-credential-manager-core' -ErrorAction SilentlyContinue),
-        (Get-Command 'git-credential-manager' -ErrorAction SilentlyContinue),
-        (Get-Command 'git' -ErrorAction SilentlyContinue)
-    ) | Where-Object { $_ }
-
-    if (-not $credentialCommands) { return '' }
-
-    $payload = "protocol=https`nhost=$RepoHost`n"
-    if ($Path) { $payload += "path=$Path`n" }
-    $payload += "`n"
-
-    foreach ($cmd in $credentialCommands) {
-        try {
-            $exe = $cmd.Source
-            if (-not $exe) { $exe = $cmd.Path }
-            if (-not $exe) { continue }
-
-            $args = @()
-            if ($cmd.Name -eq 'git') {
-                $args = @('credential-manager-core', 'get')
-            } elseif ($cmd.Name -eq 'git-credential-manager') {
-                $args = @('get')
-            } else {
-                $args = @('get')
-            }
-
-            $result = $payload | & $exe @args 2>$null
-            if ($LASTEXITCODE -ne 0 -and -not $result) { continue }
-
-            $match = ($result | Select-String -Pattern '^password=(.+)$' | Select-Object -First 1)
-            if ($match) {
-                return $match.Matches[0].Groups[1].Value
-            }
-        } catch {
-            continue
-        }
-    }
-
-    return ''
+    param([string]$RepoHost,[string]$Path='')
+    return (Get-TreeStoredCredential ('git:https://'+$RepoHost+'/'+$Path))
 }
-
+. (Join-Path $PSScriptRoot 'internal/_credentials.ps1')
 $sharedPath = Join-Path $PSScriptRoot 'internal\_shared.ps1'
-if (-not (Test-Path $sharedPath)) {
+if (-not (Test-Path -LiteralPath $sharedPath)) {
     Write-Fail "_shared.ps1 not found alongside git_tree.ps1."
     exit 1
 }
 . $sharedPath
 
+. (Join-Path $PSScriptRoot 'internal/_http.ps1')
 function Invoke-ApiRequest {
-    param(
-        [string]$Uri,
-        [string]$Pat = '',
-        [string]$PatHeader = 'Authorization',
-        [string]$PatPrefix = 'token'
-    )
-
-    $headers = @{ 'User-Agent' = 'ProjectTreeUtility/2.0' }
-    if ($Pat -ne '') {
-<<<<<<< HEAD
-        if ($PatPrefix -ne '') {
-            $headers[$PatHeader] = "$PatPrefix $Pat"
-        } else {
-            $headers[$PatHeader] = $Pat
-        }
-=======
-        $headers[$PatHeader] = "$PatPrefix $Pat"
->>>>>>> 46d4b9c9fbbd365c47daec7faeed0746fc47c166
-    }
-
-    try {
-        $response = Invoke-WebRequest -Uri $Uri -Headers $headers `
-                                      -UseBasicParsing -ErrorAction Stop
-        return $response
-    } catch [System.Net.WebException] {
-        $code = [int]$_.Exception.Response.StatusCode
-        if ($code -eq 401) { throw "401 Unauthorized  -  PAT may be invalid or repo is private." }
-        if ($code -eq 403) { throw "403 Forbidden  -  rate limit hit or PAT lacks repo scope." }
-        if ($code -eq 404) { throw "404 Not Found  -  check the URL, repo name, and branch name." }
-        throw ("HTTP $code  -  " + $_.Exception.Message)
-    }
+    param([string]$Uri,[string]$Pat='',[string]$PatHeader='Authorization',[string]$PatPrefix='token')
+    $headers=@{'User-Agent'='ProjectTreeUtility/2.2'}
+    if($Pat){$headers[$PatHeader]=if($PatPrefix){$PatPrefix+' '+$Pat}else{$Pat}}
+    return (Invoke-TreeHttpRequest $Uri $headers)
 }
-
 function Get-RemoteTreeNode {
     param(
         [Parameter(Mandatory = $true)][object[]]$Entries,
@@ -303,7 +228,7 @@ function Parse-GitLabUrl {
 function Get-GitHubTree {
     param([string]$Owner, [string]$Repo, [string]$Branch, [string]$Pat)
 
-    $uri = "https://api.github.com/repos/$Owner/$Repo/git/trees/$Branch`?recursive=1"
+    $uri = "https://api.github.com/repos/$([Uri]::EscapeDataString($Owner))/$([Uri]::EscapeDataString($Repo))/git/trees/$([Uri]::EscapeDataString($Branch))?recursive=1"
     Write-Step "Calling GitHub API..."
     Write-Step "  $uri"
 
@@ -311,15 +236,13 @@ function Get-GitHubTree {
                                   -PatHeader 'Authorization' -PatPrefix 'token'
     $data = $response.Content | ConvertFrom-Json
 
-    if ($data.truncated -eq $true) {
-        Write-Warn "GitHub returned a truncated tree (repo exceeds 100,000 entries)."
-        Write-Warn "Output may be incomplete. Consider exporting a specific subfolder."
-    }
-
+    if($data.PSObject.Properties.Name -notcontains 'tree' -or $data.tree -isnot [Array]){throw 'GitHub returned an invalid tree response.'}
+    if($data.truncated -eq $true){throw 'GitHub returned an incomplete (truncated) tree; output was not written.'}
+    Assert-RemoteTreeEntries @($data.tree)
     # Normalise to @{ Path; Type }  -  type: 'blob'=file, 'tree'=folder
-    $entries = $data.tree | ForEach-Object {
+    $entries = @($data.tree | ForEach-Object {
         @{ Path = $_.path; Type = $_.type }
-    }
+    })
 
     Write-Ok ("GitHub API returned " + $entries.Count + " entries.")
     return $entries
@@ -339,15 +262,20 @@ function Get-GitLabTree {
 
     Write-Step "Calling GitLab API (paginated)..."
 
+    $visited=@{}
     do {
+        if($visited.ContainsKey($page) -or $page -gt 10000){throw 'Invalid or excessive GitLab pagination.'};$visited[$page]=$true
         $uri = "$base/api/v4/projects/$EncodedPath/repository/tree" +
-               "?recursive=true&ref=$Branch&per_page=$perPage&page=$page"
+               "?recursive=true&ref=$([Uri]::EscapeDataString($Branch))&per_page=$perPage&page=$page"
         Write-Step "  Page $page  -  $uri"
 
         $response = Invoke-ApiRequest -Uri $uri -Pat $Pat `
                                       -PatHeader 'PRIVATE-TOKEN' -PatPrefix ''
 
-        $items = $response.Content | ConvertFrom-Json
+        if(-not ([string]$response.Content).TrimStart().StartsWith('[')){throw 'GitLab returned an invalid tree page.'}
+        $parsedItems = $response.Content | ConvertFrom-Json
+        $items = @($parsedItems)
+        Assert-RemoteTreeEntries @($items)
         foreach ($item in $items) {
             $allItems.Add(@{
                 Path = $item.path
@@ -358,13 +286,14 @@ function Get-GitLabTree {
         # Check if more pages exist
         $nextPage = $response.Headers['X-Next-Page']
         if ($nextPage -and $nextPage -ne '') {
-            $page = [int]$nextPage
+            $next=0;if(-not [int]::TryParse([string]$nextPage,[ref]$next) -or $next -le $page){throw 'Invalid GitLab next-page header.'};$page=$next
         } else {
             $page = 0
         }
 
     } while ($page -gt 0)
 
+    Assert-RemoteTreeEntries $allItems.ToArray()
     Write-Ok ("GitLab API returned " + $allItems.Count + " entries (all pages).")
     return $allItems
 }
@@ -493,7 +422,7 @@ function Render-Output {
     if ($Format -eq 'json' -or $Format -eq 'yaml') {
         $tree = Get-RemoteTreeNode -Entries $Entries -RootName $RepoName
         if ($Format -eq 'json') {
-            return ($tree | ConvertTo-Json -Depth 20)
+            return ($tree | ConvertTo-Json -Depth 100 -WarningAction Stop)
         }
         return (ConvertTo-TreeYaml -Entries $Entries -RootName $RepoName)
     }
@@ -519,9 +448,7 @@ function Render-Output {
     if ($Format -eq 'md') {
         $sb.AppendLine('## ' + $RepoName + '/') | Out-Null
         $sb.AppendLine('``````text') | Out-Null
-    } elseif ($Format -eq 'importable') {
-        $sb.AppendLine('- ' + $RepoName + '/') | Out-Null
-    } else {
+    } elseif ($Format -ne 'importable') {
         $sb.AppendLine($RepoName + '/') | Out-Null
     }
 
@@ -614,6 +541,11 @@ if (-not $RepoUrl.StartsWith('https://')) {
     Write-Fail "URL must start with https://  -  HTTP is not accepted."
     exit 1
 }
+if($MaxDepth -lt 0){throw 'Maximum depth cannot be negative.'}
+if($Provider -eq 'gitlab'){
+    $repoUri=[Uri]$RepoUrl;$baseUri=[Uri]$GitLabBaseUrl
+    if($baseUri.Scheme -ne 'https' -or $baseUri.UserInfo -or $baseUri.Authority -ne $repoUri.Authority){throw 'GitLab base URL must use HTTPS and match the repository host and port.'}
+}
 
 Write-Host ''
 
@@ -623,11 +555,8 @@ try {
     $repoPath = Get-RepoPath -Url $RepoUrl
     $pat = Get-StoredPat -RepoHost $repoHost -Path $repoPath
 
-    if (-not $pat) {
-        if ($Ci) {
-            Write-Fail "No stored credential found for $repoHost and CI mode is enabled."
-            exit 1
-        }
+    if (-not $pat -and -not $Ci) {
+
 
         Write-Host "Personal Access Token (optional)."
         Write-Host "  GitHub: token with 'repo' or 'read:repo' scope."
@@ -637,7 +566,7 @@ try {
         $pat = ConvertTo-PlainText -Secure $securePat
         $securePat.Dispose()
         Write-Host ''
-    } else {
+    } elseif ($pat) {
         Write-Step "Using stored credential for host: $repoHost"
     }
 
@@ -678,7 +607,7 @@ try {
 } catch {
     $pat = ''
     Write-Fail $_.Exception.Message
-    exit 1
+    exit 2
 }
 
 # Clear PAT from memory  -  all API calls are complete
@@ -694,10 +623,10 @@ if ($ExcludeList -ne '') {
 # Filter and sort
 Write-Host ''
 Write-Step "Filtering and sorting entries..."
-$filtered = Filter-Entries -Entries $rawEntries `
+$filtered = @(Filter-Entries -Entries $rawEntries `
                            -SubFolder $SubFolder `
                            -MaxDepth $MaxDepth `
-                           -ExcludeParts $excludeParts
+                           -ExcludeParts $excludeParts)
 
 Write-Ok ("$($filtered.Count) entries after filtering.")
 
@@ -713,7 +642,7 @@ $output = Render-Output -Entries $filtered -Format $OutputFormat `
 
 # Write file
 $outputDir = Split-Path -Parent $OutputFile
-if ($outputDir -and -not (Test-Path $outputDir)) {
+if ($outputDir -and -not (Test-Path -LiteralPath $outputDir)) {
     New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 }
 [System.IO.File]::WriteAllText($OutputFile, $output, [System.Text.Encoding]::UTF8)
@@ -732,3 +661,5 @@ Write-Host ('  Saved to  : ' + $OutputFile)
 Write-Host $sep
 
 exit 0
+
+} catch { Write-Host ('[ERROR] Remote export failed: '+$_.Exception.Message); exit 2 }

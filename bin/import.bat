@@ -1,4 +1,17 @@
 @echo off
+setlocal EnableExtensions DisableDelayedExpansion
+if defined PTU_LEGACY goto legacy_entry
+if not "%~1"=="" goto cli_entry
+if /i "%TREE_CI%"=="1" goto cli_entry
+if /i "%TREE_CI%"=="true" goto cli_entry
+if /i "%TREE_CI%"=="yes" goto cli_entry
+goto legacy_entry
+:cli_entry
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\cli.ps1" import %*
+exit /b %errorlevel%
+:legacy_entry
+endlocal
+@echo off
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
@@ -17,7 +30,7 @@ cd /d "%~dp0"
 :: ============================================================
 
 set "SHARED=%~dp0..\src\internal\_shared.ps1"
-set "TMPPS1=%~dp0_import_temp.ps1"
+set "IMP_RESULT=2"
 set "SPACE_UNIT=2"
 
 if not exist "%SHARED%" (
@@ -58,8 +71,7 @@ echo [OK] File located: !IMP_FILE!
 
 :: ── Step 2: Detect format ───────────────────────────────────
 echo.
-for /f "usebackq delims=" %%D in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    ". '%SHARED:\=/%'; Write-Output (Get-StructureFormat -FilePath '!IMP_FILE:\=/!')"`) do set "IMP_DETECTED=%%D"
+for /f "usebackq delims=" %%D in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action DetectImport`) do set "IMP_DETECTED=%%D"
 
 set "IMP_FORMAT="
 
@@ -70,6 +82,8 @@ if "!IMP_DETECTED!"=="empty" (
 if "!IMP_DETECTED!"=="dash"    ( echo [INFO] Detected: Dash layout  & set "IMP_FORMAT=dash"    )
 if "!IMP_DETECTED!"=="tab"     ( echo [INFO] Detected: Tab-indented & set "IMP_FORMAT=tab"     )
 if "!IMP_DETECTED!"=="treesym" ( echo [INFO] Detected: Tree-style   & set "IMP_FORMAT=treesym" )
+if "!IMP_DETECTED!"=="json" set "IMP_FORMAT=json"
+if "!IMP_DETECTED!"=="yaml" set "IMP_FORMAT=yaml"
 
 if "!IMP_FORMAT!"=="" (
     echo [INFO] Format not auto-detected. Please specify:
@@ -96,7 +110,7 @@ if "!IMP_FORMAT!"=="" (
 :imp_step3
 echo.
 call "%~dp0security.bat" VALIDATE_FILE "!IMP_FILE!" "!IMP_FORMAT!"
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo [ERROR] Validation failed. Check the file and re-run.
     goto imp_exit
 )
@@ -132,51 +146,13 @@ if not "!OUT_TYPE!"=="summary" (
 echo.
 echo [INFO] Processing ...
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    ". '%SHARED:\=/%';" ^
-    "$entries = Read-StructureFile -FilePath '!IMP_FILE:\=/!' -Format '!IMP_FORMAT!' -SpaceUnit !SPACE_UNIT!;" ^
-    "$sb = [System.Text.StringBuilder]::new();" ^
-    "$sep = [string]::new([char]0x2500, 45);" ^
-    "if ('!OUT_TYPE!' -ne 'summary') {" ^
-    "    if ('!OUT_TYPE!' -eq 'md') { $sb.AppendLine('## Imported Structure').AppendLine('``````text') | Out-Null }" ^
-    "    else { $sb.AppendLine('Imported Structure') | Out-Null }" ^
-    "}" ^
-    "for ($i = 0; $i -lt $entries.Count; $i++) {" ^
-    "    $e = $entries[$i]; $depth = $e.Depth; $name = $e.Name;" ^
-    "    $isLast = $true;" ^
-    "    for ($j = $i+1; $j -lt $entries.Count; $j++) {" ^
-    "        if ($entries[$j].Depth -eq $depth) { $isLast = $false; break }" ^
-    "        if ($entries[$j].Depth -lt $depth) { break }" ^
-    "    };" ^
-    "    if ('!OUT_TYPE!' -eq 'importable') {" ^
-    "        $sb.AppendLine(('-' * $depth) + ' ' + $name) | Out-Null" ^
-    "    } elseif ('!OUT_TYPE!' -eq 'summary') {" ^
-    "        Write-Host (('  ' * ($depth-1)) + $name)" ^
-    "    } else {" ^
-    "        $prefix = '    ' * ($depth - 1);" ^
-    "        $conn   = if ($isLast) { [char]0x2514+[char]0x2500+[char]0x2500+' ' } else { [char]0x251C+[char]0x2500+[char]0x2500+' ' };" ^
-    "        $clean  = $name.TrimEnd('/');" ^
-    "        $mock   = if ($e.IsDir) { New-Object System.IO.DirectoryInfo('C:\'+$clean) } else { New-Object System.IO.FileInfo('C:\'+$clean) };" ^
-    "        $emoji  = Get-Emoji -Item $mock;" ^
-    "        if ('!OUT_TYPE!' -eq 'md') { $sb.AppendLine($prefix+$conn+$emoji+' ``'+$name+'``') | Out-Null }" ^
-    "        else { $sb.AppendLine($prefix+$conn+$emoji+' '+$name) | Out-Null }" ^
-    "    }" ^
-    "};" ^
-    "if ('!OUT_TYPE!' -eq 'md') { $sb.AppendLine('``````') | Out-Null };" ^
-    "if ('!OUT_TYPE!' -ne 'summary') {" ^
-    "    [System.IO.File]::WriteAllText('!OUT_FILE:\=/!', $sb.ToString(), [System.Text.Encoding]::UTF8);" ^
-    "    Write-Host '[OK] Saved: !OUT_NAME!!OUT_EXT!'" ^
-    "} else {" ^
-    "    Write-Host '';" ^
-    "    Write-Host $sep;" ^
-    "    Write-Host (' Total entries: ' + $entries.Count);" ^
-    "    Write-Host $sep" ^
-    "}"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\src\wrapper_actions.ps1" -Action ConvertImport
 
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo [ERROR] Processing failed.
     goto imp_exit
 )
+set "IMP_RESULT=0"
 
 :: ── Step 7: Clipboard ───────────────────────────────────────
 if not "!OUT_TYPE!"=="summary" (
@@ -205,5 +181,5 @@ echo   import.bat done.
 echo ============================================
 
 :imp_exit
-endlocal
 pause
+endlocal & exit /b %IMP_RESULT%

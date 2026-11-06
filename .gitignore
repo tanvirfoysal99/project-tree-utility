@@ -1,4 +1,6 @@
 data/store_data.json
+data/store_data.json.*
+data/.library-*.tmp
 data/store_trees/
 *.log
 *.tmp

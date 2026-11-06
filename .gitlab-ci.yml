@@ -1,0 +1,9 @@
+stages: [test]
+
+# Requires a Windows shell runner registered with the "windows" tag.
+windows-regression:
+  stage: test
+  tags: [windows]
+  timeout: 15 minutes
+  script:
+    - powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tests/run-regressions.ps1

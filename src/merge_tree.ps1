@@ -12,83 +12,18 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $shared = Join-Path $PSScriptRoot 'internal\_shared.ps1'
-if (-not (Test-Path $shared)) {
+if (-not (Test-Path -LiteralPath $shared)) {
     Write-Host '[ERROR] _shared.ps1 not found alongside merge_tree.ps1.'
     exit 2
 }
 
 . $shared
 
-function Build-Tree {
-    param($Entries)
-    $root = @{
-        Name     = '__ROOT__'
-        Depth    = 0
-        Children = [System.Collections.Generic.List[object]]::new()
-    }
-    $stack = [System.Collections.Generic.List[object]]::new()
-    $stack.Add($root)
-
-    foreach ($e in $Entries) {
-        $node = @{
-            Name     = $e.Name
-            Depth    = $e.Depth
-            Children = [System.Collections.Generic.List[object]]::new()
-        }
-        while ($stack.Count -gt 1 -and $stack[$stack.Count - 1].Depth -ge $e.Depth) {
-            $stack.RemoveAt($stack.Count - 1)
-        }
-        $stack[$stack.Count - 1].Children.Add($node)
-        $stack.Add($node)
-    }
-
-    return $root
-}
-
-function Merge-Trees {
-    param($ANode, $BNode, [string]$MergeStrategy)
-
-    $aByName = @{}
-    foreach ($child in $ANode.Children) {
-        $key = $child.Name.ToLower().TrimEnd('/')
-        $aByName[$key] = $child
-    }
-
-    foreach ($bChild in $BNode.Children) {
-        $key = $bChild.Name.ToLower().TrimEnd('/')
-        if ($aByName.ContainsKey($key)) {
-            if ($MergeStrategy -eq 'b_over_a') {
-                $aByName[$key].Name = $bChild.Name
-            }
-            Merge-Trees -ANode $aByName[$key] -BNode $bChild -MergeStrategy $MergeStrategy
-        } else {
-            $ANode.Children.Add($bChild)
-        }
-    }
-}
-
-function Flatten-Tree {
-    param($Node, [int]$Depth = 0)
-
-    $result = [System.Collections.Generic.List[string]]::new()
-    foreach ($child in $Node.Children) {
-        $result.Add(('-' * ($Depth + 1)) + ' ' + $child.Name)
-        $sub = Flatten-Tree -Node $child -Depth ($Depth + 1)
-        foreach ($line in $sub) {
-            $result.Add($line)
-        }
-    }
-    return $result
-}
-
 try {
     $entriesA = Read-StructureFile -FilePath $FileA -Format $FormatA -SpaceUnit $SpaceUnitA
     $entriesB = Read-StructureFile -FilePath $FileB -Format $FormatB -SpaceUnit $SpaceUnitB
-    $treeA = Build-Tree -Entries $entriesA
-    $treeB = Build-Tree -Entries $entriesB
-    Merge-Trees -ANode $treeA -BNode $treeB -MergeStrategy $Strategy
-    $flat = Flatten-Tree -Node $treeA
-
+    $merged=@(Merge-StructureEntries @($entriesA) @($entriesB) $Strategy)
+    $flat=@(ConvertTo-DashStructure $merged)
     $sep = [string]::new([char]0x2500, 45)
     Write-Host $sep
     Write-Host '  TREE-AWARE MERGE SUMMARY'

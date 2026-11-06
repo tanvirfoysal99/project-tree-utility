@@ -30,20 +30,63 @@
 $ErrorActionPreference = 'Stop'
 
 # Paths (resolved relative to project root)
-$script:StoreRoot    = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$script:StoreRoot    = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $script:StoreJson    = Join-Path $script:StoreRoot 'data\store_data.json'
 $script:StoreTreeDir = Join-Path $script:StoreRoot 'data\store_trees'
+$script:StoreDataDir = Join-Path $script:StoreRoot 'data'
 
 # Shared library (for format detection + entry counting)
 $sharedPath = Join-Path $PSScriptRoot 'internal\_shared.ps1'
-if (Test-Path $sharedPath) { . $sharedPath }
+if (Test-Path -LiteralPath $sharedPath) { . $sharedPath }
+
+function Resolve-LibraryPath {
+    param([Parameter(Mandatory = $true)][string]$RelativePath)
+    # Accept the original data-relative form and migrate repo-relative paths.
+    $normalized = $RelativePath.Replace('/', '\')
+    if ($normalized.StartsWith('data\', [StringComparison]::OrdinalIgnoreCase)) {
+        $normalized = $normalized.Substring(5)
+    }
+    if ($normalized -notmatch '^store_trees\\[^\\]+\.txt$') {
+        throw ('Invalid library file path: ' + $RelativePath)
+    }
+    $leaf = $normalized.Substring(12)
+    if (Test-DangerousName -Name $leaf) { throw ('Unsafe library filename: ' + $RelativePath) }
+    if ($leaf -match ':' -or $leaf -match '[. ]$') { throw ('Invalid library filename: ' + $RelativePath) }
+    $fullPath = [IO.Path]::GetFullPath((Join-Path $script:StoreDataDir $normalized))
+    if (-not (Test-SafePath -CandidatePath $fullPath -AllowedBase $script:StoreTreeDir)) {
+        throw ('Library file path is outside the library or crosses a reparse point: ' + $RelativePath)
+    }
+    return $fullPath
+}
+
+function Confirm-LibraryIndex {
+    param([object]$Index)
+    if ($null -eq $Index -or $Index.version -ne 1 -or $null -eq $Index.trees -or
+        $Index.trees -is [string] -or $Index.trees -isnot [System.Collections.IEnumerable]) {
+        throw 'Invalid library index schema (expected version 1 and a trees array).'
+    }
+    $ids = @{}
+    foreach ($entry in $Index.trees) {
+        if (-not $entry.id -or -not $entry.name -or -not $entry.file -or $ids.ContainsKey([string]$entry.id)) {
+            throw 'Invalid library entry: id, name and file are required; ids must be unique.'
+        }
+        $ids[[string]$entry.id] = $true
+        $null = Resolve-LibraryPath -RelativePath ([string]$entry.file)
+    }
+}
 
 # ─────────────────────────────────────────────────────────────
 # Ensure-StoreDirectory
 # Creates store_trees\ if it does not exist.
 # ─────────────────────────────────────────────────────────────
 function Ensure-StoreDirectory {
-    if (-not (Test-Path $script:StoreTreeDir)) {
+    if (-not (Test-SafePath -CandidatePath $script:StoreJson -AllowedBase $script:StoreDataDir)) {
+        throw 'Library index crosses a reparse point.'
+    }
+    if (-not (Test-SafePath -CandidatePath $script:StoreTreeDir -AllowedBase $script:StoreDataDir)) {
+        throw 'Library directory crosses a reparse point.'
+    }
+    if (-not (Test-Path -LiteralPath $script:StoreTreeDir)) {
         New-Item -ItemType Directory -Path $script:StoreTreeDir -Force | Out-Null
         Write-Host '[INFO] Created store_trees\ directory.'
     }
@@ -53,45 +96,49 @@ function Ensure-StoreDirectory {
 # Get-LibraryIndex
 # Returns parsed index object. Creates empty skeleton if missing.
 # ─────────────────────────────────────────────────────────────
-function Get-LibraryIndex {
+function Read-LibraryIndexCore {
     Ensure-StoreDirectory
 
-    if (-not (Test-Path $script:StoreJson)) {
+    if (-not (Test-Path -LiteralPath $script:StoreJson)) {
         $skeleton = [ordered]@{
             version = 1
             trees   = @()
         }
         $json = $skeleton | ConvertTo-Json -Depth 10
-        [System.IO.File]::WriteAllText($script:StoreJson, $json, [System.Text.Encoding]::UTF8)
+        Write-AtomicLibraryFile $script:StoreJson $json ($script:StoreJson+'.bak')
         return $skeleton
     }
 
     $raw = [System.IO.File]::ReadAllText($script:StoreJson, [System.Text.Encoding]::UTF8)
     if ([string]::IsNullOrWhiteSpace($raw)) {
-        return [ordered]@{ version = 1; trees = @() }
+        throw 'Library index is empty; preserve it for recovery rather than replacing it.'
     }
 
     try {
         $parsed = $raw | ConvertFrom-Json
-        # Ensure trees is always a real array (PowerShell flattens single-item arrays)
-        if ($null -eq $parsed.trees) {
-            $parsed | Add-Member -NotePropertyName trees -NotePropertyValue @() -Force
-        }
-        return $parsed
     } catch {
-        Write-Host '[WARN] store_data.json is malformed. Starting with empty index.'
-        return [ordered]@{ version = 1; trees = @() }
+        throw ('Cannot read library index: ' + $_.Exception.Message)
     }
+    Confirm-LibraryIndex -Index $parsed
+    $migrated = $false
+    foreach ($entry in $parsed.trees) {
+        $canonical = 'store_trees\' + [IO.Path]::GetFileName((Resolve-LibraryPath -RelativePath $entry.file))
+        if ($entry.file -cne $canonical) { $entry.file = $canonical; $migrated = $true }
+    }
+    if ($migrated) { Save-LibraryIndex -Index $parsed }
+    return $parsed
 }
 
 # ─────────────────────────────────────────────────────────────
 # Save-LibraryIndex
 # Writes the index object back to store_data.json cleanly.
 # ─────────────────────────────────────────────────────────────
-function Save-LibraryIndex {
+function Write-LibraryIndexCore {
     param([object]$Index)
+    Ensure-StoreDirectory
+    Confirm-LibraryIndex -Index $Index
     $json = $Index | ConvertTo-Json -Depth 10
-    [System.IO.File]::WriteAllText($script:StoreJson, $json, [System.Text.Encoding]::UTF8)
+    Write-AtomicLibraryFile $script:StoreJson $json ($script:StoreJson+'.bak')
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -114,11 +161,12 @@ function Get-SafeSlug {
     # Truncate
     if ($slug.Length -gt 60) { $slug = $slug.Substring(0, 60).TrimEnd('-') }
     if ($slug -eq '') { $slug = 'tree' }
+    if (Test-DangerousName ($slug + '.txt')) { $slug = 'tree-' + $slug }
 
     # Collision check
     $base    = $slug
     $counter = 2
-    while (Test-Path (Join-Path $script:StoreTreeDir ($slug + '.txt'))) {
+    while (Test-Path -LiteralPath (Join-Path $script:StoreTreeDir ($slug + '.txt'))) {
         $slug = $base + '-' + $counter
         $counter++
     }
@@ -132,7 +180,7 @@ function Get-SafeSlug {
 # ─────────────────────────────────────────────────────────────
 function Get-EntryCount {
     param([string]$FilePath)
-    if (-not (Test-Path $FilePath)) { return 0 }
+    if (-not (Test-Path -LiteralPath $FilePath)) { return 0 }
     $count = 0
     foreach ($line in [System.IO.File]::ReadAllLines($FilePath, [System.Text.Encoding]::UTF8)) {
         $t = $line.Trim()
@@ -146,7 +194,7 @@ function Get-EntryCount {
 # Copies source file into store_trees\, adds entry to JSON.
 # Returns the new entry object, or $null on failure.
 # ─────────────────────────────────────────────────────────────
-function Add-TreeEntry {
+function Add-TreeEntryCore {
     param(
         [string]$SourceFile,
         [string]$UserName,
@@ -154,6 +202,8 @@ function Add-TreeEntry {
         [string]$Source   # import | export | git_tree | merge | manual
     )
 
+    if ($Format -eq 'importable') { $Format='dash' }
+    $null = Read-StructureFile -FilePath $SourceFile -Format $Format
     Ensure-StoreDirectory
 
     $index = Get-LibraryIndex
@@ -170,16 +220,9 @@ function Add-TreeEntry {
     }
 
     $slug    = Get-SafeSlug -Name $finalName
-    $destFile = Join-Path $script:StoreTreeDir ($slug + '.txt')
+    $destFile = Resolve-LibraryPath -RelativePath ('store_trees\' + $slug + '.txt')
 
-    try {
-        Copy-Item -LiteralPath $SourceFile -Destination $destFile -Force
-    } catch {
-        Write-Host ('[ERROR] Could not copy file to store_trees\: ' + $_.Exception.Message)
-        return $null
-    }
-
-    $count = Get-EntryCount -FilePath $destFile
+    $count = Get-EntryCount -FilePath $SourceFile
     $now   = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')
 
     $entry = [ordered]@{
@@ -199,7 +242,9 @@ function Add-TreeEntry {
     $trees.Add($entry)
 
     $index.trees = $trees.ToArray()
-    Save-LibraryIndex -Index $index
+    $relative='store_trees\'+$slug+'.txt'
+    $hash=(Get-FileHash -LiteralPath $SourceFile -Algorithm SHA256).Hash
+    Commit-LibraryChange $index 'add' '' $relative { [IO.File]::Copy($SourceFile,$destFile,$false) } $hash
 
     Write-Host ('[OK] Saved to library: ' + $finalName)
     return $entry
@@ -210,7 +255,7 @@ function Add-TreeEntry {
 # Deletes .txt from store_trees\ and removes JSON entry.
 # Accepts name or id.
 # ─────────────────────────────────────────────────────────────
-function Remove-TreeEntry {
+function Remove-TreeEntryCore {
     param([string]$NameOrId)
 
     $index = Get-LibraryIndex
@@ -221,22 +266,16 @@ function Remove-TreeEntry {
         return $false
     }
 
-    # Delete the file
-    $filePath = Join-Path $script:StoreRoot $target.file
-    if (Test-Path $filePath) {
-        Remove-Item -LiteralPath $filePath -Force
-        Write-Host ('[OK] Deleted file: ' + $target.file)
-    } else {
-        Write-Host ('[INFO] File was already missing: ' + $target.file)
-    }
-
+    $filePath=Resolve-LibraryPath $target.file
+    $stash='store_trees\.pending-'+[guid]::NewGuid().ToString('N')+'.txt'
+    $stashPath=Resolve-LibraryPath $stash
     # Remove from index
     $trees = [System.Collections.Generic.List[object]]::new()
     foreach ($t in $index.trees) {
         if ($t.id -ne $target.id) { $trees.Add($t) }
     }
     $index.trees = $trees.ToArray()
-    Save-LibraryIndex -Index $index
+    Commit-LibraryChange $index 'delete' $target.file $stash { if([IO.File]::Exists($filePath)){[IO.File]::Move($filePath,$stashPath)} }
 
     Write-Host ('[OK] Removed from library: ' + $target.name)
     return $true
@@ -246,7 +285,7 @@ function Remove-TreeEntry {
 # Rename-TreeEntry
 # Renames .txt on disk and updates name + id in JSON.
 # ─────────────────────────────────────────────────────────────
-function Rename-TreeEntry {
+function Rename-TreeEntryCore {
     param([string]$NameOrId, [string]$NewName)
 
     $index = Get-LibraryIndex
@@ -264,14 +303,11 @@ function Rename-TreeEntry {
         return $false
     }
 
-    $oldFile = Join-Path $script:StoreRoot $target.file
+    $oldFile = Resolve-LibraryPath -RelativePath $target.file
     $newSlug = Get-SafeSlug -Name $NewName
-    $newFile = Join-Path $script:StoreTreeDir ($newSlug + '.txt')
+    $newFile = Resolve-LibraryPath -RelativePath ('store_trees\' + $newSlug + '.txt')
 
-    if (Test-Path $oldFile) {
-        Rename-Item -LiteralPath $oldFile -NewName ($newSlug + '.txt') -Force
-    }
-
+    $oldRelative=$target.file
     # Update entry in index
     $trees = [System.Collections.Generic.List[object]]::new()
     foreach ($t in $index.trees) {
@@ -284,7 +320,7 @@ function Rename-TreeEntry {
         $trees.Add($t)
     }
     $index.trees = $trees.ToArray()
-    Save-LibraryIndex -Index $index
+    Commit-LibraryChange $index 'rename' $oldRelative ('store_trees\'+$newSlug+'.txt') { if([IO.File]::Exists($oldFile)){[IO.File]::Move($oldFile,$newFile)}else{throw 'Cannot rename a missing tree file.'} }
 
     Write-Host ('[OK] Renamed to: ' + $NewName)
     return $true
@@ -302,8 +338,8 @@ function Get-TreePath {
     $target = $index.trees | Where-Object { $_.name -eq $NameOrId -or $_.id -eq $NameOrId } | Select-Object -First 1
     if (-not $target) { return '' }
 
-    $filePath = Join-Path $script:StoreRoot $target.file
-    if (Test-Path $filePath) { return $filePath }
+    $filePath = Resolve-LibraryPath -RelativePath $target.file
+    if (Test-Path -LiteralPath $filePath) { return $filePath }
     return ''
 }
 
@@ -322,16 +358,18 @@ function Get-OrphanFiles {
 
     $orphans = [System.Collections.Generic.List[object]]::new()
 
-    Get-ChildItem -Path $script:StoreTreeDir -Filter '*.txt' -ErrorAction SilentlyContinue | ForEach-Object {
+    Get-ChildItem -LiteralPath $script:StoreTreeDir -Filter '*.txt' -ErrorAction Stop | ForEach-Object {
+        if($_.Name.StartsWith('.pending-')){return}
+        $safePath = Resolve-LibraryPath -RelativePath ('store_trees\' + $_.Name)
         if ($registeredFiles -notcontains $_.Name.ToLower()) {
             $fmt = 'unknown'
             # Try format detection if _shared.ps1 was loaded
             if (Get-Command 'Get-StructureFormat' -ErrorAction SilentlyContinue) {
-                try { $fmt = Get-StructureFormat -FilePath $_.FullName } catch {}
+                try { $fmt = Get-StructureFormat -FilePath $safePath } catch {}
             }
             $orphans.Add([ordered]@{
                 Name       = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
-                FilePath   = $_.FullName
+                FilePath   = $safePath
                 Format     = $fmt
                 EntryCount = '?'
             }) | Out-Null
@@ -371,8 +409,8 @@ function Show-LibraryTable {
 
     # Registered entries
     foreach ($t in $index.trees) {
-        $filePath = Join-Path $script:StoreRoot $t.file
-        $missing  = -not (Test-Path $filePath)
+        $filePath = Resolve-LibraryPath -RelativePath $t.file
+        $missing  = -not (Test-Path -LiteralPath $filePath)
         $nameDisp = if ($missing) { $t.name + ' [MISSING]' } else { $t.name }
         $dateDisp = if ($t.created) { $t.created.Substring(0, 10) } else { '?' }
         $cntDisp  = if ($missing)   { '?' } else { $t.entry_count.ToString() }
@@ -418,7 +456,7 @@ function Resolve-TreeSelection {
 
     if ($Number -le $regCount) {
         $entry    = $regList[$Number - 1]
-        $filePath = Join-Path $script:StoreRoot $entry.file
+        $filePath = Resolve-LibraryPath -RelativePath $entry.file
         return [ordered]@{
             Name         = $entry.name
             FilePath     = $filePath
@@ -453,7 +491,7 @@ function Resolve-TreeSelection {
 function Remove-MissingEntries {
     $index = Get-LibraryIndex
     $missing = @($index.trees | Where-Object {
-        -not (Test-Path (Join-Path $script:StoreRoot $_.file))
+        -not (Test-Path -LiteralPath (Resolve-LibraryPath -RelativePath $_.file))
     })
 
     if ($missing.Count -eq 0) { return }
@@ -477,8 +515,13 @@ function Remove-MissingEntries {
 # Register-OrphanFile
 # Promotes a manually-dropped file into a proper JSON entry.
 # ─────────────────────────────────────────────────────────────
-function Register-OrphanFile {
+function Register-OrphanFileCore {
     param([object]$Orphan, [string]$UserName)
+
+    $safePath = Resolve-LibraryPath -RelativePath ('store_trees\' + [IO.Path]::GetFileName($Orphan.FilePath))
+    if ([IO.Path]::GetFullPath($Orphan.FilePath) -ne $safePath) {
+        throw 'Orphan file must be inside the library directory.'
+    }
 
     $index = Get-LibraryIndex
 
@@ -493,8 +536,9 @@ function Register-OrphanFile {
 
     $fmt = $Orphan.Format
     if ($fmt -eq 'unknown' -or $fmt -eq '') { $fmt = 'dash' }
+    $null=Read-StructureFile $safePath $fmt
 
-    $count = Get-EntryCount -FilePath $Orphan.FilePath
+    $count = Get-EntryCount -FilePath $safePath
     $now   = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')
     $slug  = [System.IO.Path]::GetFileNameWithoutExtension($Orphan.FilePath)
 
@@ -518,3 +562,5 @@ function Register-OrphanFile {
     Write-Host ('[OK] Registered: ' + $finalName)
     return $entry
 }
+
+. (Join-Path $PSScriptRoot 'internal/_library_transactions.ps1')

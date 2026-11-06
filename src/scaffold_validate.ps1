@@ -9,7 +9,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $shared = Join-Path $PSScriptRoot 'internal\_shared.ps1'
-if (-not (Test-Path $shared)) {
+if (-not (Test-Path -LiteralPath $shared)) {
     Write-Host '[ERROR] _shared.ps1 not found alongside scaffold_validate.ps1.'
     exit 2
 }
@@ -17,12 +17,13 @@ if (-not (Test-Path $shared)) {
 . $shared
 
 try {
+    $projectRoot = Resolve-SafeProjectRoot -TargetBase $TargetBase -ProjectName $ProjectName
     if ($Format -eq 'template') {
         Write-Color '[SECURITY] Template preset selected; built-in definitions will be used.' Gray
         exit 0
     }
 
-    if (-not (Test-Path $StructureFile)) {
+    if (-not (Test-Path -LiteralPath $StructureFile)) {
         Write-Color ('[SECURITY] File not found: ' + $StructureFile) Red
         exit 1
     }
@@ -32,7 +33,6 @@ try {
         exit 1
     }
 
-    $projectRoot = Join-Path $TargetBase $ProjectName
     $entries = Read-StructureFile -FilePath $StructureFile -Format $Format -SpaceUnit $SpaceUnit
     $badNames = $entries | Where-Object { Test-DangerousName -Name $_.Name.TrimEnd('/') }
     if ($badNames) {

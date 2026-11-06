@@ -2,13 +2,19 @@ param(
     [string]$WatchPath = '',
     [string]$StructureFile = '',
     [string]$IgnoreFile = '',
-    [int]$MaxDepth = 0
+    [int]$MaxDepth = 0,
+    [string]$Format = '',
+    [switch]$Ci,
+    [ValidateRange(0,2147483647)][int]$DurationSeconds=0
 )
 
 $ErrorActionPreference = 'Stop'
+try {
+if ($env:TREE_CI -match '^(?i:1|true|yes)$') { $Ci=$true }
+if ($Ci -and -not $WatchPath) { Write-Host '[ERROR] CI watch requires a directory path.'; exit 2 }
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-Set-Location $scriptRoot
+Set-Location -LiteralPath $scriptRoot
 
 $sharedPath = Join-Path $scriptRoot 'internal\_shared.ps1'
 if (-not (Test-Path -LiteralPath $sharedPath)) {
@@ -40,39 +46,8 @@ function Get-StructureSnapshot {
         [Parameter(Mandatory = $true)][int]$ScanDepth
     )
 
-    $expectedFiles = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    $expectedFolders = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    $actualFiles = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    $actualFolders = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-
-    foreach ($entry in $Entries) {
-        $rel = ''
-        if ($entry.PSObject.Properties.Name -contains 'Path' -and $entry.Path) {
-            $rel = $entry.Path.TrimStart('\', '/')
-        } else {
-            $rel = $entry.Name.TrimEnd('/')
-        }
-        $full = Join-Path $BasePath $rel
-        if ($entry.IsDir) { [void]$expectedFolders.Add($full) } else { [void]$expectedFiles.Add($full) }
-    }
-
-    $liveItems = Get-LimitedItems -Path $BasePath -CurrentDepth 0 -MaxDepth $ScanDepth -ExcludeFolders $ExcludeFolders
-    foreach ($item in $liveItems) {
-        if ($item.PSIsContainer) { [void]$actualFolders.Add($item.FullName) } else { [void]$actualFiles.Add($item.FullName) }
-    }
-
-    return [pscustomobject]@{
-        ExpectedFiles   = $expectedFiles
-        ExpectedFolders = $expectedFolders
-        ActualFiles     = $actualFiles
-        ActualFolders   = $actualFolders
-        MissingFiles    = @($expectedFiles | Where-Object { -not $actualFiles.Contains($_) })
-        MissingFolders  = @($expectedFolders | Where-Object { -not $actualFolders.Contains($_) })
-        ExtraFiles      = @($actualFiles | Where-Object { -not $expectedFiles.Contains($_) })
-        ExtraFolders    = @($actualFolders | Where-Object { -not $expectedFolders.Contains($_) })
-    }
+    return (Get-TreeComparison $BasePath $Entries $ExcludeFolders $ScanDepth)
 }
-
 function Write-DriftSnapshot {
     param([Parameter(Mandatory = $true)]$Snapshot)
 
@@ -92,13 +67,15 @@ Write-Color '============================================' Gray
 
 $watchInput = Resolve-PathOrPrompt -InputPath $WatchPath -Prompt 'Directory to watch (press Enter for current folder)' -DefaultValue '.'
 $base = Resolve-FullPath $watchInput
-if (-not (Test-Path -LiteralPath $base)) {
+if (-not (Test-Path -LiteralPath $base -PathType Container)) {
     Write-Color "[ERROR] Directory not found: $base" Red
     exit 2
 }
 
 $treeConfig = Get-TreeConfig -RootPath $base -IgnoreFile $IgnoreFile
-$scanDepth = if ($MaxDepth -gt 0) { $MaxDepth } elseif ($treeConfig.MaxDepth) { [int]$treeConfig.MaxDepth } else { 5 }
+$explicit=@{}
+if($PSBoundParameters.ContainsKey('MaxDepth')){$explicit.MaxDepth=$MaxDepth}
+$scanDepth=(Resolve-TreeOptions $treeConfig $explicit).MaxDepth
 $excludeFolders = Get-ExcludeList -RootPath $base -IgnoreFile $IgnoreFile
 
 $structurePath = ''
@@ -109,7 +86,7 @@ if ($StructureFile -and $StructureFile.Trim()) {
         Write-Color "[ERROR] Structure file not found: $structurePath" Red
         exit 2
     }
-    $format = Get-StructureFormat -FilePath $structurePath
+    if (-not $Format) { $Format = Get-StructureFormat -FilePath $structurePath }
     if ($format -eq 'empty' -or $format -eq 'unknown') {
         Write-Color '[ERROR] Structure file format could not be detected.' Red
         exit 2
@@ -124,52 +101,11 @@ if ($structurePath) {
     Write-Color ('[WATCH] Structure: ' + $structurePath) Gray
 }
 
-if ($entries.Count -gt 0) {
-    $snapshot = Get-StructureSnapshot -BasePath $base -Entries $entries -ExcludeFolders $excludeFolders -ScanDepth $scanDepth
-    Write-DriftSnapshot -Snapshot $snapshot
+. (Join-Path $PSScriptRoot 'internal/_watch.ps1')
+Invoke-TreeWatch -BasePath $base -Entries $entries -ExcludeFolders $excludeFolders -MaxDepth $scanDepth -DurationSeconds $DurationSeconds -OnSnapshot {
+    param($snapshot)
+    if($snapshot.PSObject.Properties.Name -contains 'MissingFiles'){Write-DriftSnapshot $snapshot}
+    else{Write-Host ('[WATCH] Snapshot entries: '+$snapshot.Scan.Items.Count)}
 }
-
-$watcher = New-Object System.IO.FileSystemWatcher
-$watcher.Path = $base
-$watcher.IncludeSubdirectories = $true
-$watcher.Filter = '*'
-$watcher.NotifyFilter = [System.IO.NotifyFilters]'FileName, DirectoryName, LastWrite, Size, CreationTime'
-$watcher.EnableRaisingEvents = $true
-
-$subs = @(
-    Register-ObjectEvent -InputObject $watcher -EventName Created -SourceIdentifier 'TreeWatch.Created'
-    Register-ObjectEvent -InputObject $watcher -EventName Changed -SourceIdentifier 'TreeWatch.Changed'
-    Register-ObjectEvent -InputObject $watcher -EventName Deleted -SourceIdentifier 'TreeWatch.Deleted'
-    Register-ObjectEvent -InputObject $watcher -EventName Renamed -SourceIdentifier 'TreeWatch.Renamed'
-)
-
-Write-Color '[WATCH] Press Ctrl+C to stop.' Gray
-
-try {
-    while ($true) {
-        $event = Wait-Event -Timeout 1
-        if (-not $event) { continue }
-
-        switch ($event.SourceIdentifier) {
-            'TreeWatch.Created' { Write-Color ('[CREATE] ' + $event.SourceEventArgs.FullPath) Green }
-            'TreeWatch.Changed' { Write-Color ('[CHANGE] ' + $event.SourceEventArgs.FullPath) Yellow }
-            'TreeWatch.Deleted' { Write-Color ('[DELETE] ' + $event.SourceEventArgs.FullPath) Red }
-            'TreeWatch.Renamed' {
-                Write-Color ('[RENAME] ' + $event.SourceEventArgs.OldFullPath + ' -> ' + $event.SourceEventArgs.FullPath) Cyan
-            }
-        }
-
-        Remove-Event -EventIdentifier $event.EventIdentifier
-
-        if ($entries.Count -gt 0) {
-            $snapshot = Get-StructureSnapshot -BasePath $base -Entries $entries -ExcludeFolders $excludeFolders -ScanDepth $scanDepth
-            Write-DriftSnapshot -Snapshot $snapshot
-        }
-    }
-} finally {
-    foreach ($sub in $subs) {
-        Unregister-Event -SubscriptionId $sub.Id -ErrorAction SilentlyContinue
-        Remove-Job -Id $sub.Id -Force -ErrorAction SilentlyContinue
-    }
-    $watcher.Dispose()
-}
+exit 0
+} catch { Write-Host ('[ERROR] Watch failed: ' + $_.Exception.Message); exit 2 }
