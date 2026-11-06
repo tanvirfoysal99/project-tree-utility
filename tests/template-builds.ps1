@@ -10,12 +10,15 @@ try{
         & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $repo 'src/scaffold.ps1') -Format template -TemplateName $name -ProjectName $name -TargetBase $scratch -Ci
         if($LASTEXITCODE -ne 0){throw ('Scaffold failed: '+$name)}
         $project=Join-Path $scratch $name
-        & npm.cmd --prefix $project install --no-audit --no-fund
-        if($LASTEXITCODE -ne 0){throw ('Dependency installation failed: '+$name)}
-        & npm.cmd --prefix $project run typecheck
-        if($LASTEXITCODE -ne 0){throw ('Typecheck failed: '+$name)}
-        & npm.cmd --prefix $project run build
-        if($LASTEXITCODE -ne 0){throw ('Build failed: '+$name)}
+        Push-Location -LiteralPath $project
+        try {
+            & npm.cmd install --no-audit --no-fund
+            if($LASTEXITCODE -ne 0){throw ('Dependency installation failed: '+$name)}
+            & npm.cmd run typecheck
+            if($LASTEXITCODE -ne 0){throw ('Typecheck failed: '+$name)}
+            & npm.cmd run build
+            if($LASTEXITCODE -ne 0){throw ('Build failed: '+$name)}
+        } finally { Pop-Location }
         Write-Host ('PASS: '+$name+' installs, typechecks, and builds.')
     }
 }finally{
