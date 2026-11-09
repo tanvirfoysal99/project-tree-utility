@@ -1,0 +1,3 @@
+# External configuration for the included scaffold/verify walkthrough.
+exclude: _creation_log.txt
+maxdepth: 0

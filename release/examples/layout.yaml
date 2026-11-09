@@ -1,0 +1,13 @@
+- path: src
+  type: directory
+  children:
+    - name: main.rs
+      type: file
+      content: |
+        fn main() {
+            println!("Hello from a scaffolded project");
+        }
+- path: tests
+  isDir: true
+- path: README.md
+  content: "Example project\n"

@@ -1,0 +1,4 @@
+- src/
+-- main.rs @content:fn main() {}
+- tests/
+- README.md @content:Example project
